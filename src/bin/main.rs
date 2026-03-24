@@ -91,6 +91,8 @@ struct Cli {
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
+    fedimint_core::rustls::install_crypto_provider().await;
+
     let cli: Cli = Cli::parse();
 
     // Initialize structured logging
