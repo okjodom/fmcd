@@ -74,6 +74,8 @@
           ];
           # Environment variables for build
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          # jemalloc trips over Nix fortify hardening in debug builds with -O0
+          NIX_HARDENING_ENABLE = "bindnow format pic relro stackprotector strictoverflow zerocallusedregs";
         };
 
         # Toolchain configuration
@@ -112,6 +114,7 @@
             export RUSTFLAGS="--cfg tokio_unstable"
             export RUSTDOCFLAGS="--cfg tokio_unstable"
             export RUST_LOG="info"
+            export NIX_HARDENING_ENABLE="bindnow format pic relro stackprotector strictoverflow zerocallusedregs"
             export LOCALE_ARCHIVE="${pkgs.glibcLocales}/lib/locale/locale-archive"
             export LANG="en_US.UTF-8"
             export LC_ALL="en_US.UTF-8"
