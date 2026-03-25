@@ -38,6 +38,7 @@
 
         lib = pkgs.lib;
         flakeboxLib = flakebox.lib.mkLib pkgs { };
+        rocksdbPkg = pkgs.rocksdb_8_11.override { enableLiburing = false; };
 
         # Source files for the build
         rustSrc = flakeboxLib.filterSubPaths {
@@ -61,6 +62,7 @@
               pkgs.zstd
               pkgs.openssl
               pkgs.protobuf
+              rocksdbPkg
             ]
             # Add clang/llvm for cross-compilation support
             ++ lib.optionals (pkgs.stdenv.hostPlatform != pkgs.stdenv.buildPlatform) [
@@ -76,6 +78,12 @@
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           # jemalloc trips over Nix fortify hardening in debug builds with -O0
           NIX_HARDENING_ENABLE = "bindnow format pic relro stackprotector strictoverflow zerocallusedregs";
+          ROCKSDB_STATIC = "true";
+          ROCKSDB_LIB_DIR = "${rocksdbPkg}/lib/";
+          ROCKSDB_INCLUDE_DIR = "${rocksdbPkg}/include/";
+          SNAPPY_STATIC = "true";
+          SNAPPY_LIB_DIR = "${pkgs.pkgsStatic.snappy}/lib/";
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-lstdc++";
         };
 
         # Toolchain configuration
@@ -115,17 +123,13 @@
             export RUSTDOCFLAGS="--cfg tokio_unstable"
             export RUST_LOG="info"
             export NIX_HARDENING_ENABLE="bindnow format pic relro stackprotector strictoverflow zerocallusedregs"
-            # cc-rs does not automatically propagate the Nix wrapper include flags.
-            export CC="gcc"
-            export CXX="g++"
-            export CC_x86_64_unknown_linux_gnu="gcc"
-            export CXX_x86_64_unknown_linux_gnu="g++"
-            export FMCD_GLIBC_INCLUDE="${pkgs.glibc.dev}/include"
-            export FMCD_CFLAGS_BASE="$(printf '%s' "$NIX_CFLAGS_COMPILE" | sed 's#-isystem ${pkgs.glibc.dev}/include##g')"
-            export CFLAGS="$FMCD_CFLAGS_BASE"
-            export CXXFLAGS="$FMCD_CFLAGS_BASE -idirafter $FMCD_GLIBC_INCLUDE"
-            export CFLAGS_x86_64_unknown_linux_gnu="$FMCD_CFLAGS_BASE"
-            export CXXFLAGS_x86_64_unknown_linux_gnu="$FMCD_CFLAGS_BASE -idirafter $FMCD_GLIBC_INCLUDE"
+            export ROCKSDB_STATIC="true"
+            export ROCKSDB_LIB_DIR="${rocksdbPkg}/lib/"
+            export ROCKSDB_INCLUDE_DIR="${rocksdbPkg}/include/"
+            export SNAPPY_STATIC="true"
+            export SNAPPY_LIB_DIR="${pkgs.pkgsStatic.snappy}/lib/"
+            # librocksdb-sys may not link stdc++ automatically when using ROCKSDB_LIB_DIR.
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS -C link-arg=-lstdc++"
             export LOCALE_ARCHIVE="${pkgs.glibcLocales}/lib/locale/locale-archive"
             export LANG="en_US.UTF-8"
             export LC_ALL="en_US.UTF-8"
