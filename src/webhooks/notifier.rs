@@ -391,7 +391,10 @@ impl WebhookNotifier {
     }
 
     /// Create the webhook payload for an event with sensitive data sanitized
-    fn create_webhook_payload(&self, event: &FmcdEvent) -> anyhow::Result<serde_json::Value> {
+    pub(crate) fn create_webhook_payload(
+        &self,
+        event: &FmcdEvent,
+    ) -> anyhow::Result<serde_json::Value> {
         // First serialize the full event to JSON
         let event_json = serde_json::to_value(event)?;
 
@@ -589,7 +592,7 @@ impl WebhookNotifier {
     }
 
     /// Calculate HMAC-SHA256 signature for webhook payload
-    fn calculate_hmac_signature(payload: &str, secret: &str) -> anyhow::Result<String> {
+    pub(crate) fn calculate_hmac_signature(payload: &str, secret: &str) -> anyhow::Result<String> {
         let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
             .map_err(|e| anyhow::anyhow!("Invalid HMAC key: {}", e))?;
 

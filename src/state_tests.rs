@@ -21,7 +21,7 @@ mod tests {
         assert!(state.is_ok(), "Should create AppState successfully");
 
         let state = state.unwrap();
-        assert_eq!(state.multimint.clients.lock().await.len(), 0);
+        assert_eq!(state.multimint().clients.lock().await.len(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -39,7 +39,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_multimint_clients_empty() {
         let state = create_test_state().await;
-        let clients = state.multimint.clients.lock().await;
+        let clients = state.multimint().clients.lock().await;
 
         assert!(clients.is_empty(), "Should have no clients initially");
     }

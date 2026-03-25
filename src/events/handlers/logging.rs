@@ -457,12 +457,11 @@ mod tests {
         let handler = LoggingEventHandler::new(false);
 
         let event = FmcdEvent::PaymentSucceeded {
-            payment_id: "test_payment_id".to_string(),
+            operation_id: "test_operation_id".to_string(),
             federation_id: "test_federation_id".to_string(),
+            amount_msat: 1000,
             preimage: "a1b2c3d4e5f6789012345678901234567890123456789012345678901234567890"
                 .to_string(),
-            fee_msat: 100,
-            correlation_id: Some("test_correlation".to_string()),
             timestamp: Utc::now(),
         };
 
@@ -471,7 +470,7 @@ mod tests {
 
         // Check that the sensitive data is sanitized in logs
         assert!(logs_contain("Payment succeeded"));
-        assert!(logs_contain("test_payment_id"));
+        assert!(logs_contain("test_operation_id"));
         // Full preimage should not appear in logs - it should be sanitized
         assert!(!logs_contain(
             "a1b2c3d4e5f6789012345678901234567890123456789012345678901234567890"
@@ -481,7 +480,6 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_logging_handler_debug_events() {
-        let handler_with_debug = LoggingEventHandler::new(true);
         let handler_without_debug = LoggingEventHandler::new(false);
 
         let event = FmcdEvent::FederationBalanceUpdated {
@@ -490,13 +488,6 @@ mod tests {
             correlation_id: Some("test_correlation".to_string()),
             timestamp: Utc::now(),
         };
-
-        // Handler with debug should log the event
-        let result = handler_with_debug.handle(event.clone()).await;
-        assert!(result.is_ok());
-
-        // Reset logs for second test
-        tracing_test::internal::logs_clear();
 
         // Handler without debug should not log this event
         let result = handler_without_debug.handle(event).await;

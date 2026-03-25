@@ -37,7 +37,9 @@ fn test_authenticated_message() {
     assert!(msg.verify(&auth));
 
     // Tampered payload should fail verification
-    let mut tampered_msg = msg.clone();
+    let mut tampered_msg = AuthenticatedMessage::new(payload, &auth).unwrap();
+    tampered_msg.timestamp = msg.timestamp;
+    tampered_msg.signature = msg.signature.clone();
     tampered_msg.payload = json!({"type": "tampered"});
     assert!(!tampered_msg.verify(&auth));
 }

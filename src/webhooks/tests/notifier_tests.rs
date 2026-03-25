@@ -121,11 +121,10 @@ fn test_create_webhook_payload() {
     let notifier = WebhookNotifier::new(config).expect("Failed to create notifier");
 
     let event = FmcdEvent::PaymentSucceeded {
-        payment_id: "test-payment".to_string(),
+        operation_id: "test-operation".to_string(),
         federation_id: "test-fed".to_string(),
+        amount_msat: 1000,
         preimage: "test-preimage".to_string(),
-        fee_msat: 1000,
-        correlation_id: Some("test-correlation".to_string()),
         timestamp: Utc::now(),
     };
 
@@ -134,7 +133,7 @@ fn test_create_webhook_payload() {
         .expect("Failed to create payload");
 
     assert_eq!(payload["type"], "payment_succeeded");
-    assert_eq!(payload["correlation_id"], "test-correlation");
+    assert!(payload["correlation_id"].is_null());
     assert!(payload["id"].is_string());
     assert!(payload["timestamp"].is_string());
     assert!(payload["data"].is_object());
@@ -143,6 +142,7 @@ fn test_create_webhook_payload() {
     if let Some(data) = payload["data"].as_object() {
         // The preimage should be redacted
         assert_eq!(data.get("preimage").unwrap(), "[REDACTED]");
+        assert_eq!(data.get("operation_id").unwrap(), "test-operation");
     }
 }
 
@@ -195,11 +195,10 @@ fn test_sensitive_data_sanitization() {
 
     // Test with an event containing sensitive data
     let event = FmcdEvent::PaymentSucceeded {
-        payment_id: "test-payment".to_string(),
+        operation_id: "test-operation".to_string(),
         federation_id: "test-fed".to_string(),
+        amount_msat: 1000,
         preimage: "sensitive-preimage-data".to_string(),
-        fee_msat: 1000,
-        correlation_id: Some("test-correlation".to_string()),
         timestamp: Utc::now(),
     };
 
@@ -214,9 +213,9 @@ fn test_sensitive_data_sanitization() {
     assert_eq!(data.get("preimage").unwrap(), "[REDACTED]");
 
     // Non-sensitive fields should remain
-    assert_eq!(data.get("payment_id").unwrap(), "test-payment");
+    assert_eq!(data.get("operation_id").unwrap(), "test-operation");
     assert_eq!(data.get("federation_id").unwrap(), "test-fed");
-    assert_eq!(data.get("fee_msat").unwrap(), 1000);
+    assert_eq!(data.get("amount_msat").unwrap(), 1000);
 }
 
 #[test]

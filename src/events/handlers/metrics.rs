@@ -286,11 +286,10 @@ mod tests {
         let handler = MetricsEventHandler::new("test");
 
         let event = FmcdEvent::PaymentSucceeded {
-            payment_id: "test_payment_id".to_string(),
+            operation_id: "test_operation_id".to_string(),
             federation_id: "test_federation_id".to_string(),
+            amount_msat: 1000,
             preimage: "test_preimage".to_string(),
-            fee_msat: 100,
-            correlation_id: Some("test_correlation".to_string()),
             timestamp: Utc::now(),
         };
 

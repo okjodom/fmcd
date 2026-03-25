@@ -103,7 +103,7 @@ impl<T: DatabaseInterface> InstrumentedDatabase<T> {
     }
 
     /// Get key prefix for logging (first 8 bytes, hex encoded)
-    fn get_key_prefix(&self, key: &[u8]) -> String {
+    pub(crate) fn get_key_prefix(&self, key: &[u8]) -> String {
         let prefix_len = std::cmp::min(key.len(), 8);
         hex::encode(&key[..prefix_len])
     }
@@ -344,6 +344,3 @@ impl<T: DatabaseInterface> DatabaseWithContext<T> for InstrumentedDatabase<T> {
         DatabaseContextWrapper::new(self, context)
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -7,9 +7,9 @@ mod tests {
     use fedimint_core::config::FederationId;
     use tokio::time::Duration;
 
+    use crate::core::operations::{InvoiceTracker, PaymentState, PaymentTracker};
     use crate::events::EventBus;
     use crate::observability::correlation::RequestContext;
-    use crate::operations::payment::*;
 
     fn create_test_federation_id() -> FederationId {
         FederationId::from_str("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
@@ -82,7 +82,9 @@ mod tests {
         assert!(!tracker.is_terminal());
 
         // Test success
-        tracker.succeed("test_preimage".to_string(), 100).await;
+        tracker
+            .succeed("test_preimage".to_string(), 1000, 100)
+            .await;
         assert_eq!(*tracker.state(), PaymentState::Succeeded);
         assert!(tracker.is_terminal());
     }
