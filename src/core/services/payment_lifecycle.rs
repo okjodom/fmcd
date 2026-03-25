@@ -724,7 +724,7 @@ impl PaymentLifecycleManager {
                     }
 
                     // Verify balance was actually updated
-                    let balance = client.get_balance().await;
+                    let balance = client.get_balance_err().await?;
                     info!(
                         operation_id = ?operation.operation_id,
                         balance_msat = balance.msats,
@@ -912,7 +912,7 @@ impl PaymentLifecycleManager {
                     let _ = event_bus.publish(event).await;
 
                     // Verify balance was actually updated
-                    let balance = client.get_balance().await;
+                    let balance = client.get_balance_err().await?;
                     info!(
                         operation_id = ?operation.operation_id,
                         balance_msat = balance.msats,

@@ -135,13 +135,20 @@ impl BalanceMonitor {
 
         for federation_id in federation_ids {
             if let Some(client) = self.multimint.get(&federation_id).await {
-                match client.get_balance().await {
-                    balance => {
+                match client.get_balance_err().await {
+                    Ok(balance) => {
                         balances.push(FederationBalance {
                             federation_id,
                             balance_msat: balance.msats,
                             last_updated: Utc::now(),
                         });
+                    }
+                    Err(error) => {
+                        warn!(
+                            federation_id = %federation_id,
+                            error = ?error,
+                            "Failed to get federation balance"
+                        );
                     }
                 }
             }
@@ -257,8 +264,7 @@ impl BalanceMonitor {
         min_change_threshold: u64,
     ) -> Result<Option<BalanceChange>> {
         // Get current balance
-        let current_balance = client.get_balance().await;
-        let current_balance_msat = current_balance.msats;
+        let current_balance_msat = client.get_balance_err().await?.msats;
 
         // Get last known balance
         let last_balance_msat = {

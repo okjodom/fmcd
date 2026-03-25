@@ -453,7 +453,7 @@ impl FmcdCore {
             let summary = mint_client.get_note_counts_by_denomination(&mut dbtx).await;
 
             // Get the actual total balance from the client (includes all modules)
-            let total_balance = client.get_balance().await;
+            let total_balance = client.get_balance_err().await?;
 
             info.insert(
                 *id,
@@ -799,7 +799,8 @@ impl FmcdCore {
             // If the amount is "all", then we need to subtract the fees from
             // the amount we are withdrawing
             BitcoinAmountOrAll::All => {
-                let balance = bitcoin::Amount::from_sat(client.get_balance().await.msats / 1000);
+                let balance =
+                    bitcoin::Amount::from_sat(client.get_balance_err().await?.msats / 1000);
                 let fees = wallet_module.get_withdraw_fees(&address, balance).await?;
                 let amount = balance.checked_sub(fees.amount());
                 let amount = match amount {

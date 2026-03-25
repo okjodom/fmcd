@@ -48,13 +48,15 @@ impl LocalClientBuilder {
         let secret = self.derive_federation_secret(&federation_id);
         Self::verify_client_config(&db, federation_id).await?;
 
-        let client_builder = self.create_client_builder(db.clone()).await?;
+        let client_builder = self.create_client_builder().await?;
 
         let client_res = if Client::is_initialized(&db).await {
-            client_builder.open(RootSecret::Custom(secret)).await
+            client_builder
+                .open(db.clone(), RootSecret::Custom(secret))
+                .await
         } else {
             let client_preview = client_builder.preview(&config.invite_code).await?;
-            client_preview.join(RootSecret::Custom(secret)).await
+            client_preview.join(db, RootSecret::Custom(secret)).await
         }?;
 
         Ok(Arc::new(client_res))
@@ -105,8 +107,8 @@ impl LocalClientBuilder {
 
     /// Constructs the client builder with the modules, database, and connector
     /// used to create clients for connected federations.
-    async fn create_client_builder(&self, db: Database) -> Result<ClientBuilder> {
-        let mut client_builder = Client::builder(db).await?;
+    async fn create_client_builder(&self) -> Result<ClientBuilder> {
+        let mut client_builder = Client::builder().await?;
         client_builder.with_module(WalletClientInit::default());
         client_builder.with_module(MintClientInit);
         client_builder.with_module(LightningClientInit::default());
