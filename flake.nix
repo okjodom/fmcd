@@ -2,11 +2,17 @@
   description = "A fedimint client daemon for server side applications to hold, use, and manage Bitcoin and ecash";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-24.11";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+
+    fenix = {
+      url = "github:nix-community/fenix?rev=6b5325a017a9a9fe7e6252ccac3680cc7181cd63";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
 
     flakebox = {
-      url = "github:rustshop/flakebox";
+      url = "github:dpc/flakebox?rev=09d74b0ecac2214a57887f80f2730f2399418067";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.fenix.follows = "fenix";
     };
 
     flake-utils.url = "github:numtide/flake-utils";
@@ -18,6 +24,7 @@
     {
       self,
       nixpkgs,
+      fenix,
       flakebox,
       flake-utils,
       fedimint,
@@ -30,7 +37,7 @@
         };
 
         lib = pkgs.lib;
-        flakeboxLib = flakebox.lib.${system} { };
+        flakeboxLib = flakebox.lib.mkLib pkgs { };
 
         # Source files for the build
         rustSrc = flakeboxLib.filterSubPaths {
@@ -79,7 +86,7 @@
             "rust-analyzer"
             "rust-src"
           ];
-          # Use stable Rust channel
+          # Use the current stable toolchain from the overridden fenix input.
           channel = "stable";
         };
 
@@ -148,10 +155,20 @@
         };
 
         devShells = {
-          default = flakeboxLib.mkDevShell commonShellArgs;
+          default = flakeboxLib.mkDevShell (
+            commonShellArgs
+            // {
+              toolchain = toolchainsStd.default;
+            }
+          );
 
           # Lint shell for CI (same as default)
-          lint = flakeboxLib.mkDevShell commonShellArgs;
+          lint = flakeboxLib.mkDevShell (
+            commonShellArgs
+            // {
+              toolchain = toolchainsStd.default;
+            }
+          );
         };
       }
     );
