@@ -56,18 +56,17 @@
 
         # Build configuration
         commonArgs = {
-          buildInputs =
-            [
-              # System libraries needed for dependencies
-              pkgs.zstd
-              pkgs.openssl
-              pkgs.protobuf
-              rocksdbPkg
-            ]
-            # Add clang/llvm for cross-compilation support
-            ++ lib.optionals (pkgs.stdenv.hostPlatform != pkgs.stdenv.buildPlatform) [
-              pkgs.llvmPackages.clang
-            ];
+          buildInputs = [
+            # System libraries needed for dependencies
+            pkgs.zstd
+            pkgs.openssl
+            pkgs.protobuf
+            rocksdbPkg
+          ]
+          # Add clang/llvm for cross-compilation support
+          ++ lib.optionals (pkgs.stdenv.hostPlatform != pkgs.stdenv.buildPlatform) [
+            pkgs.llvmPackages.clang
+          ];
           nativeBuildInputs = [
             pkgs.pkg-config
             pkgs.cmake
