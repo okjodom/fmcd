@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use anyhow::anyhow;
     use axum::http::StatusCode;

@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used)]
 use chrono::Utc;
-use serde_json::json;
 
 use crate::events::FmcdEvent;
 use crate::webhooks::notifier::{RetryConfig, WebhookConfig, WebhookEndpoint, WebhookNotifier};

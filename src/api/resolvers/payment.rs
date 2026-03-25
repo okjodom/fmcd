@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use async_trait::async_trait;
 use fedimint_core::Amount;
 use fedimint_ln_common::lightning_invoice::Bolt11Invoice;

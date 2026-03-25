@@ -169,7 +169,7 @@ impl MultiMint {
         for config in configs {
             let federation_id = config.invite_code.federation_id();
 
-            if let Ok(client) = client_builder.build(&db, config.clone()).await {
+            if let Ok(client) = client_builder.build(db, config.clone()).await {
                 clients.insert(federation_id, client);
             } else {
                 warn!("Failed to load client for federation: {federation_id}");
@@ -303,7 +303,7 @@ async fn load_or_generate_mnemonic(db: &Database) -> Result<Mnemonic> {
                 Bip39RootSecretStrategy::<12>::random(&mut thread_rng())
             };
 
-            Client::store_encodable_client_secret(&db, mnemonic.to_entropy()).await?;
+            Client::store_encodable_client_secret(db, mnemonic.to_entropy()).await?;
             mnemonic
         },
     )

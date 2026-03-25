@@ -202,7 +202,7 @@ mod tests {
             FmcdEvent::InvoiceCreated { invoice_id, .. } => {
                 assert_eq!(invoice_id, "test_invoice_id");
             }
-            _ => assert!(false, "Expected InvoiceCreated event"),
+            _ => panic!("Expected InvoiceCreated event"),
         }
     }
 

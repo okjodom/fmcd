@@ -389,29 +389,26 @@ impl FmcdCore {
         // Clone multimint which is cheap due to Arc
         let mut multimint = (*self.multimint).clone();
 
-        let this_federation_id =
-            multimint
-                .register_new(invite_code.clone())
-                .await
-                .map_err(|e| {
-                    // Emit federation connection failed event
-                    let event_bus = self.event_bus.clone();
-                    let federation_id_str = federation_id.to_string();
-                    let correlation_id = context.as_ref().map(|c| c.correlation_id.clone());
-                    let error_msg = e.to_string();
+        let this_federation_id = multimint
+            .register_new(invite_code.clone())
+            .await
+            .inspect_err(|e| {
+                // Emit federation connection failed event
+                let event_bus = self.event_bus.clone();
+                let federation_id_str = federation_id.to_string();
+                let correlation_id = context.as_ref().map(|c| c.correlation_id.clone());
+                let error_msg = e.to_string();
 
-                    tokio::spawn(async move {
-                        let event = FmcdEvent::FederationDisconnected {
-                            federation_id: federation_id_str,
-                            reason: format!("Failed to join: {}", error_msg),
-                            correlation_id,
-                            timestamp: Utc::now(),
-                        };
-                        let _ = event_bus.publish(event).await;
-                    });
-
-                    e
-                })?;
+                tokio::spawn(async move {
+                    let event = FmcdEvent::FederationDisconnected {
+                        federation_id: federation_id_str,
+                        reason: format!("Failed to join: {}", error_msg),
+                        correlation_id,
+                        timestamp: Utc::now(),
+                    };
+                    let _ = event_bus.publish(event).await;
+                });
+            })?;
 
         // Emit federation connection success event
         let event_bus = self.event_bus.clone();
@@ -907,7 +904,7 @@ impl FmcdCore {
                     );
 
                     return Ok(WithdrawResponse {
-                        txid: txid,
+                        txid,
                         fees_sat: absolute_fees.to_sat(),
                     });
                 }
@@ -1116,7 +1113,7 @@ impl FmcdCore {
         use fedimint_ln_client::{InternalPayState, LnPayState};
         use futures_util::StreamExt;
 
-        let preimage = match payment_type.clone() {
+        let preimage = match payment_type {
             PayType::Internal(op_id) => {
                 let mut updates = lightning_module
                     .subscribe_internal_pay(op_id)

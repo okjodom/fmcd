@@ -7,7 +7,6 @@ use chrono::Utc;
 use fedimint_client::ClientHandleArc;
 use fedimint_core::config::FederationId;
 use fedimint_core::core::OperationId;
-use fedimint_ln_common::bitcoin::OutPoint;
 use fedimint_wallet_client::{DepositStateV2, WalletClientModule};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -224,20 +223,6 @@ impl DepositMonitor {
         }
     }
 
-    /// Internal method to poll all active deposits for updates using efficient
-    /// subscription management
-    #[instrument(skip(self))]
-    async fn poll_deposits(&self) -> Result<()> {
-        Self::poll_deposits_impl(
-            &self.event_bus,
-            &self.multimint,
-            &self.active_deposits,
-            &self.subscriptions,
-            self.config.operation_timeout,
-        )
-        .await
-    }
-
     /// Static implementation of deposit polling for use in spawned tasks
     async fn poll_deposits_impl(
         event_bus: &Arc<EventBus>,
@@ -367,18 +352,6 @@ impl DepositMonitor {
         Ok(())
     }
 
-    /// Check the status of deposit operations using efficient subscription
-    /// management
-    async fn check_deposit_statuses(
-        &self,
-        client: &ClientHandleArc,
-        federation_id: FederationId,
-        operations: &HashMap<OperationId, DepositInfo>,
-    ) -> Result<Vec<(OperationId, DepositResult)>> {
-        Self::check_deposit_statuses_impl(client, federation_id, operations, &self.subscriptions)
-            .await
-    }
-
     /// Static implementation of deposit status checking for use in spawned
     /// tasks
     async fn check_deposit_statuses_impl(
@@ -391,7 +364,7 @@ impl DepositMonitor {
         let mut subscriptions = subscriptions.write().await;
 
         // Check each operation
-        for (operation_id, _deposit_info) in operations {
+        for operation_id in operations.keys() {
             // Try to get or create subscription for this operation
             let has_subscription = subscriptions.contains_key(operation_id);
 
@@ -435,7 +408,6 @@ impl DepositMonitor {
                                     DepositResult {
                                         amount_sat: btc_deposited.to_sat(),
                                         txid: btc_out_point.txid.to_string(),
-                                        out_point: btc_out_point,
                                     },
                                 ));
 
@@ -523,7 +495,6 @@ impl DepositMonitor {
 struct DepositResult {
     amount_sat: u64,
     txid: String,
-    out_point: OutPoint,
 }
 
 /// Statistics about the deposit monitor

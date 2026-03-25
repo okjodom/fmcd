@@ -12,8 +12,10 @@ fn test_default_config() {
 
 #[test]
 fn test_config_with_auth() {
-    let mut config = Config::default();
-    config.http_password = Some("testpassword".to_string());
+    let config = Config {
+        http_password: Some("testpassword".to_string()),
+        ..Default::default()
+    };
     assert!(config.is_auth_enabled());
     assert_eq!(config.auth_password(), Some("testpassword"));
 }
@@ -24,8 +26,10 @@ fn test_config_addresses() {
     assert_eq!(config.http_address(), "127.0.0.1:7070");
     assert_eq!(config.websocket_address(), "127.0.0.1:7070");
 
-    let mut config_with_ws_port = Config::default();
-    config_with_ws_port.websocket_port = Some(9741);
+    let config_with_ws_port = Config {
+        websocket_port: Some(9741),
+        ..Default::default()
+    };
     assert_eq!(config_with_ws_port.websocket_address(), "127.0.0.1:9741");
 }
 
@@ -34,9 +38,11 @@ fn test_config_save_load() {
     let dir = tempdir().unwrap();
     let config_path = dir.path().join("test.toml");
 
-    let mut original_config = Config::default();
-    original_config.http_password = Some("testpass".to_string());
-    original_config.http_bind_port = 8080;
+    let original_config = Config {
+        http_password: Some("testpass".to_string()),
+        http_bind_port: 8080,
+        ..Default::default()
+    };
 
     // Save config
     original_config.save_to_file(&config_path).unwrap();
@@ -95,8 +101,10 @@ fn test_load_or_create_existing_file_with_password() {
     let config_path = dir.path().join("existing_config.toml");
 
     // Create a config with password
-    let mut original_config = Config::default();
-    original_config.http_password = Some("existingpass".to_string());
+    let original_config = Config {
+        http_password: Some("existingpass".to_string()),
+        ..Default::default()
+    };
     original_config.save_to_file(&config_path).unwrap();
 
     // Load or create should not generate new password
@@ -138,8 +146,10 @@ fn test_atomic_save_no_temp_files() {
     let dir = tempdir().unwrap();
     let config_path = dir.path().join("atomic_test.toml");
 
-    let mut config = Config::default();
-    config.http_password = Some("test123".to_string());
+    let config = Config {
+        http_password: Some("test123".to_string()),
+        ..Default::default()
+    };
 
     // Save config atomically
     config.save_to_file(&config_path).unwrap();

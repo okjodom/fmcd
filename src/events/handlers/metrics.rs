@@ -11,15 +11,11 @@ use crate::metrics::{
 };
 
 /// Event handler that collects metrics from events for Prometheus export
-pub struct MetricsEventHandler {
-    service_name: String,
-}
+pub struct MetricsEventHandler {}
 
 impl MetricsEventHandler {
-    pub fn new(service_name: impl Into<String>) -> Self {
-        Self {
-            service_name: service_name.into(),
-        }
+    pub fn new(_service_name: impl Into<String>) -> Self {
+        Self {}
     }
 
     /// Record payment metrics using standardized metric names
@@ -262,7 +258,6 @@ impl EventHandler for MetricsEventHandler {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
 
     use chrono::Utc;
 

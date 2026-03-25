@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use async_trait::async_trait;
 use lazy_static::lazy_static;
@@ -69,15 +68,11 @@ pub async fn get_prometheus_handle() -> Option<PrometheusHandle> {
 }
 
 /// Metrics collector that implements the EventHandler trait
-pub struct MetricsCollector {
-    start_time: Instant,
-}
+pub struct MetricsCollector {}
 
 impl MetricsCollector {
     pub fn new() -> Self {
-        Self {
-            start_time: Instant::now(),
-        }
+        Self {}
     }
 
     /// Record payment metrics from payment events
@@ -273,61 +268,57 @@ impl MetricsCollector {
 
     /// Record database metrics from database events
     fn record_database_metrics(&self, event: &FmcdEvent) {
-        match event {
-            FmcdEvent::DatabaseQueryExecuted {
-                operation,
-                duration_ms,
-                success,
-                ..
-            } => {
-                let status = if *success { "success" } else { "error" };
+        if let FmcdEvent::DatabaseQueryExecuted {
+            operation,
+            duration_ms,
+            success,
+            ..
+        } = event
+        {
+            let status = if *success { "success" } else { "error" };
 
-                counter!(
-                    DATABASE_QUERIES_TOTAL,
-                    "operation" => operation.clone(),
-                    "status" => status
-                )
-                .increment(1);
+            counter!(
+                DATABASE_QUERIES_TOTAL,
+                "operation" => operation.clone(),
+                "status" => status
+            )
+            .increment(1);
 
-                histogram!(
-                    DATABASE_QUERY_DURATION_SECONDS,
-                    "operation" => operation.clone()
-                )
-                .record(*duration_ms as f64 / 1000.0);
+            histogram!(
+                DATABASE_QUERY_DURATION_SECONDS,
+                "operation" => operation.clone()
+            )
+            .record(*duration_ms as f64 / 1000.0);
 
-                debug!(
-                    operation = %operation,
-                    duration_ms = duration_ms,
-                    success = success,
-                    "Recorded database query metrics"
-                );
-            }
-            _ => {}
+            debug!(
+                operation = %operation,
+                duration_ms = duration_ms,
+                success = success,
+                "Recorded database query metrics"
+            );
         }
     }
 
     /// Record authentication metrics from auth events
     fn record_auth_metrics(&self, event: &FmcdEvent) {
-        match event {
-            FmcdEvent::AuthenticationAttempt {
-                success, endpoint, ..
-            } => {
-                let status = if *success { "success" } else { "failure" };
+        if let FmcdEvent::AuthenticationAttempt {
+            success, endpoint, ..
+        } = event
+        {
+            let status = if *success { "success" } else { "failure" };
 
-                counter!(
-                    AUTH_ATTEMPTS_TOTAL,
-                    "endpoint" => endpoint.clone(),
-                    "status" => status
-                )
-                .increment(1);
+            counter!(
+                AUTH_ATTEMPTS_TOTAL,
+                "endpoint" => endpoint.clone(),
+                "status" => status
+            )
+            .increment(1);
 
-                debug!(
-                    endpoint = %endpoint,
-                    success = success,
-                    "Recorded authentication attempt metrics"
-                );
-            }
-            _ => {}
+            debug!(
+                endpoint = %endpoint,
+                success = success,
+                "Recorded authentication attempt metrics"
+            );
         }
     }
 

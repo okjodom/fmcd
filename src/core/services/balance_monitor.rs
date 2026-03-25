@@ -274,11 +274,7 @@ impl BalanceMonitor {
 
         let balance_change = match last_balance_msat {
             Some(last_balance) => {
-                let change = if current_balance_msat > last_balance {
-                    current_balance_msat - last_balance
-                } else {
-                    last_balance - current_balance_msat
-                };
+                let change = current_balance_msat.abs_diff(last_balance);
 
                 if change >= min_change_threshold {
                     Some(BalanceChange {

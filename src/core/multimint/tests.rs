@@ -1,5 +1,6 @@
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
+#[allow(clippy::module_inception)]
 mod tests {
     use fedimint_core::db::Database;
     use tempfile::TempDir;

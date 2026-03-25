@@ -139,7 +139,7 @@ async fn _get_status(
         // If new variants are added to fedimint, compilation will fail here
     };
 
-    span.record("status", &format!("{:?}", status));
+    span.record("status", format!("{:?}", status));
 
     info!(
         operation_id = ?operation_id,

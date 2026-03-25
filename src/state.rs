@@ -87,7 +87,7 @@ impl AppState {
 
     // Convenience accessors for backward compatibility
     pub fn multimint(&self) -> &MultiMint {
-        &*self.core.multimint
+        &self.core.multimint
     }
 
     pub fn start_time(&self) -> Instant {

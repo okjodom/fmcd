@@ -3,24 +3,20 @@
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::time::Duration;
 
     use axum::body::Body;
     use axum::extract::Request;
     use axum::http::{Method, StatusCode};
     use axum::middleware::from_fn;
-    use axum::response::IntoResponse;
-    use axum::routing::{get, post};
+    use axum::routing::get;
     use axum::{Json, Router};
     use serde_json::json;
     use tower::ServiceExt;
     use tracing_test::traced_test;
 
     use crate::error::{AppError, ErrorCategory};
-    use crate::observability::{
-        init_logging, request_id_middleware, LoggingConfig, RequestContext,
-    };
+    use crate::observability::{request_id_middleware, LoggingConfig, RequestContext};
 
     // Mock handler that demonstrates enhanced error handling
     async fn mock_handler(

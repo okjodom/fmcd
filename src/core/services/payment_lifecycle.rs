@@ -374,7 +374,7 @@ impl PaymentLifecycleManager {
             let variant = meta.get("variant").and_then(|v| v.as_str());
             let op_type = meta.get("type").and_then(|v| v.as_str());
 
-            let payment_type = match operation_kind.as_ref() {
+            let payment_type = match operation_kind {
                 "ln" => {
                     // Check multiple metadata fields to determine operation type
                     if variant == Some("receive")

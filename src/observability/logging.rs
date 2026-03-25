@@ -108,7 +108,7 @@ fn cleanup_old_log_files(log_dir: &PathBuf, max_files: usize) -> anyhow::Result<
             let path = entry.path();
 
             // Only process .log files
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "log") {
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "log") {
                 let metadata = entry.metadata().ok()?;
                 let modified = metadata.modified().ok()?;
                 Some((path, modified))
@@ -131,63 +131,4 @@ fn cleanup_old_log_files(log_dir: &PathBuf, max_files: usize) -> anyhow::Result<
     }
 
     Ok(())
-}
-
-/// Set secure permissions on a file (Unix only)
-fn set_file_permissions(file_path: &std::path::Path, mode: u32) -> anyhow::Result<()> {
-    let permissions = Permissions::from_mode(mode);
-    fs::set_permissions(file_path, permissions)?;
-    Ok(())
-}
-
-/// Custom file appender wrapper that sets permissions
-struct SecureFileAppender {
-    inner: RollingFileAppender,
-    permissions: u32,
-    log_dir: PathBuf,
-}
-
-impl SecureFileAppender {
-    fn new(
-        rotation: Rotation,
-        directory: PathBuf,
-        file_name_prefix: &str,
-        permissions: u32,
-    ) -> Self {
-        let inner = RollingFileAppender::new(rotation, &directory, file_name_prefix);
-        Self {
-            inner,
-            permissions,
-            log_dir: directory,
-        }
-    }
-
-    /// Ensure permissions are set on any newly created log files
-    fn ensure_file_permissions(&self) -> anyhow::Result<()> {
-        // Check for any .log files in the directory and ensure proper permissions
-        if let Ok(entries) = fs::read_dir(&self.log_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() && path.extension().map_or(false, |ext| ext == "log") {
-                    if let Err(e) = set_file_permissions(&path, self.permissions) {
-                        eprintln!("Failed to set permissions on log file {:?}: {}", path, e);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl std::io::Write for SecureFileAppender {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let result = self.inner.write(buf);
-        // Try to ensure permissions after write (best effort)
-        let _ = self.ensure_file_permissions();
-        result
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
 }
