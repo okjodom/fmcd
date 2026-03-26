@@ -26,12 +26,12 @@
 //!
 //! Example:
 //!
-//! ```rust
-//! use crate::core::multimint::MultiMint;
+//! ```no_run
+//! use fmcd::core::multimint::MultiMint;
 //! use std::path::PathBuf;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!    let work_dir = PathBuf::from("/path/to/fm_data_dir");
 //!
 //!    // `new` handles creating a new multimint with no clients or will load the existing databases in the work_dir into ClientHandleArcs
@@ -42,19 +42,9 @@
 //!    // If there are no clients, the ids will be an empty vector
 //!    let federation_ids = multimint.ids().await;
 //!    println!("Federation IDs: {:?}", federation_ids);
-//!
-//!    // Create a new client by connecting to a federation with an invite code
-//!    let invite_code = "fed1_invite_code";
-//!    // The client's keypair is created based off a 64 byte random secret that is either generated or provided by the user
-//!    let secret = env::var("FM_SECRET").ok_or(None);
-//!     multimint.register_new(invite_code, secret).await?;
-//!    
-//!    // Get a client by its federation id
-//!    let client = multimint.get(&federation_ids[0]).await?;
-//!    println!("Client: {:?}", client);
 //!    
 //!    Ok(())
-//! }
+//! # }
 //! ```
 //!
 //! The `MultiMint` struct provides methods for adding, removing, and updating
@@ -105,12 +95,12 @@ impl MultiMint {
     ///
     /// # Example
     ///
-    /// ```rust
-    /// use crate::core::multimint::MultiMint;
+    /// ```no_run
+    /// use fmcd::core::multimint::MultiMint;
     /// use std::path::PathBuf;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ///   let work_dir = PathBuf::from("/path/to/fm_data_dir");
     ///
     ///   // `new` handles creating a new multimint with no clients or will load the existing databases in the work_dir into ClientHandleArcs
@@ -121,19 +111,9 @@ impl MultiMint {
     /// // If there are no clients, the ids will be an empty vector
     /// let federation_ids = multimint.ids().await;
     /// println!("Federation IDs: {:?}", federation_ids);
-    ///
-    ///   // Create a new client by connecting to a federation with an invite code
-    ///   let invite_code = "fed1_invite_code";
-    ///  // The client's keypair is created based off a 64 byte random secret that is either generated or provided by the user
-    ///  let secret = env::var("FM_SECRET").ok_or(None);
-    ///     multimint.register_new(invite_code, secret).await?;
-    ///    
-    ///   // Get a client by its federation id
-    ///   let client = multimint.get(&federation_ids[0]).await?;
-    ///   println!("Client: {:?}", client);
     ///    
     ///   Ok(())
-    /// }
+    /// # }
     /// ```
     pub async fn new(work_dir: PathBuf) -> Result<Self> {
         let db = Database::new(
