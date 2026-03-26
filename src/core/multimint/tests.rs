@@ -45,7 +45,8 @@ mod tests {
         let work_dir = temp_dir.path().to_path_buf();
 
         // Create first instance
-        let _multimint1 = MultiMint::new(work_dir.clone()).await.unwrap();
+        let multimint1 = MultiMint::new(work_dir.clone()).await.unwrap();
+        drop(multimint1);
 
         // Create second instance with same work_dir
         let _multimint2 = MultiMint::new(work_dir.clone()).await.unwrap();

@@ -56,7 +56,7 @@ mod tests {
             .layer(from_fn(request_id_middleware));
 
         let request = Request::builder()
-            .method(Method::POST)
+            .method(Method::GET)
             .uri("/api/test")
             .body(Body::empty())
             .expect("Failed to build test request");

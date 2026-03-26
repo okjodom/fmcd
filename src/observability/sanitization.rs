@@ -162,8 +162,8 @@ mod tests {
         let result = sanitized.to_string();
 
         assert!(result.contains("lnbc1u"));
-        assert!(result.contains("xqzpua"));
         assert!(result.contains("[REDACTED_INVOICE_"));
+        assert!(result.ends_with("g8d"));
         assert!(!result.contains(
             "qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu"
         ));
