@@ -1,7 +1,7 @@
 [package]
 name = "fmcd"
 description = "A fedimint client daemon for server side applications to hold, use, and manage Bitcoin"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 repository = "https://github.com/minmoto/fmcd"
 keywords = ["fedimint", "bitcoin", "lightning", "ecash"]

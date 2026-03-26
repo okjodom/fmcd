@@ -14,7 +14,7 @@ then
     exit 1
 fi
 
-# Conigure UI env from devimint env
+# Configure UI env from devimint env
 export REACT_APP_FM_GATEWAY_API=$FM_GATEWAY_API_ADDR
 export REACT_APP_FM_GATEWAY_PASSWORD=$FM_GATEWAY_PASSWORD
 
