@@ -16,7 +16,6 @@ use fedimint_core::invite_code::InviteCode;
 use fedimint_core::secp256k1::PublicKey;
 use fedimint_core::{Amount, BitcoinAmountOrAll, TieredCounts};
 use fedimint_ln_client::{LightningClientModule, OutgoingLightningPayment, PayType};
-use fedimint_ln_common::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use fedimint_mint_client::MintClientModule;
 use fedimint_wallet_client::client_db::TweakIdx;
 use fedimint_wallet_client::{WalletClientModule, WithdrawState};
@@ -28,7 +27,7 @@ use self::multimint::MultiMint;
 use self::operations::payment::InvoiceTracker;
 use self::operations::PaymentTracker;
 use self::services::{
-    BalanceMonitor, BalanceMonitorConfig, DepositMonitor, DepositMonitorConfig,
+    BalanceMonitor, BalanceMonitorConfig, DepositMonitor, DepositMonitorConfig, LightningService,
     PaymentLifecycleConfig, PaymentLifecycleManager,
 };
 use crate::error::{AppError, ErrorCategory};
@@ -191,6 +190,7 @@ pub struct FmcdCore {
     pub multimint: Arc<MultiMint>,
     pub start_time: Instant,
     pub event_bus: Arc<EventBus>,
+    pub lightning_service: Arc<LightningService>,
     pub deposit_monitor: Option<Arc<DepositMonitor>>,
     pub balance_monitor: Option<Arc<BalanceMonitor>>,
     pub payment_lifecycle_manager: Option<Arc<PaymentLifecycleManager>>,
@@ -208,6 +208,7 @@ impl FmcdCore {
 
         // Initialize event bus with reasonable capacity
         let event_bus = Arc::new(EventBus::new(1000));
+        let lightning_service = Arc::new(LightningService::new());
 
         // Register default event handlers
         let logging_handler = Arc::new(LoggingEventHandler::new(false));
@@ -255,6 +256,7 @@ impl FmcdCore {
             multimint,
             start_time: Instant::now(),
             event_bus,
+            lightning_service,
             deposit_monitor: Some(deposit_monitor),
             balance_monitor: Some(balance_monitor),
             payment_lifecycle_manager: Some(payment_lifecycle_manager),
@@ -478,37 +480,8 @@ impl FmcdCore {
 
         let client = self.get_client(req.federation_id).await?;
 
-        let lightning_module = client
-            .get_first_module::<LightningClientModule>()
-            .map_err(|e| {
-                error!(
-                    federation_id = %req.federation_id,
-                    error = ?e,
-                    "Failed to get Lightning module from fedimint client"
-                );
-                AppError::new(
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    anyhow!("Failed to get Lightning module: {}", e),
-                )
-            })?;
-
-        let gateway = lightning_module
-            .select_gateway(&req.gateway_id)
-            .await
-            .ok_or_else(|| {
-                error!(
-                    gateway_id = %req.gateway_id,
-                    federation_id = %req.federation_id,
-                    "Failed to select gateway - gateway may be offline or not registered"
-                );
-                AppError::new(
-                    axum::http::StatusCode::BAD_REQUEST,
-                    anyhow!("Failed to select gateway with ID {}. Gateway may be offline or not registered with this federation.", req.gateway_id),
-                )
-            })?;
-
         info!(
-            gateway_id = %gateway.gateway_id,
+            gateway_id = %req.gateway_id,
             federation_id = %req.federation_id,
             amount_msat = %req.amount_msat.msats,
             "Creating invoice with automatic monitoring"
@@ -522,41 +495,18 @@ impl FmcdCore {
         // Use provided metadata or default to null
         let metadata = req.metadata.clone().unwrap_or(serde_json::Value::Null);
 
-        // Create fedimint invoice using native client
-        let (operation_id, invoice, _) = lightning_module
-            .create_bolt11_invoice(
+        let (operation_id, invoice) = self
+            .lightning_service
+            .create_invoice(
+                &client,
+                req.federation_id,
+                req.gateway_id,
                 req.amount_msat,
-                Bolt11InvoiceDescription::Direct(
-                    Description::new(req.description.clone()).map_err(|e| {
-                        error!(
-                            federation_id = %req.federation_id,
-                            description = %req.description,
-                            error = ?e,
-                            "Invalid invoice description"
-                        );
-                        AppError::new(
-                            axum::http::StatusCode::BAD_REQUEST,
-                            anyhow!("Invalid invoice description: {}", e),
-                        )
-                    })?,
-                ),
+                &req.description,
                 req.expiry_time,
                 metadata,
-                Some(gateway),
             )
-            .await
-            .map_err(|e| {
-                error!(
-                    federation_id = %req.federation_id,
-                    amount_msat = %req.amount_msat.msats,
-                    error = ?e,
-                    "Failed to create fedimint invoice"
-                );
-                AppError::new(
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    anyhow!("Failed to create invoice: {}", e),
-                )
-            })?;
+            .await?;
 
         // Generate unique invoice ID for tracking
         let invoice_id = format!("inv_{}", Uuid::new_v4().simple());
@@ -1058,7 +1008,33 @@ impl FmcdCore {
             )
             .await;
 
-        // Get lightning module
+        let tracked_amount = req
+            .amount_msat
+            .unwrap_or_else(|| Amount::from_msats(bolt11.amount_milli_satoshis().unwrap_or(0)));
+
+        let OutgoingLightningPayment {
+            payment_type,
+            contract_id,
+            fee,
+        } = self
+            .lightning_service
+            .pay_invoice(
+                &client,
+                req.federation_id,
+                req.gateway_id,
+                bolt11,
+                req.amount_msat,
+            )
+            .await
+            .map_err(|e| {
+                error!(error = ?e, payment_id = %payment_tracker.payment_id(), "Payment failed during execution");
+                AppError::new(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    anyhow!(e.to_string()),
+                )
+                    .with_context(context.clone())
+            })?;
+
         let lightning_module = client
             .get_first_module::<LightningClientModule>()
             .map_err(|e| {
@@ -1068,47 +1044,6 @@ impl FmcdCore {
                     payment_id = %payment_tracker.payment_id(),
                     "Lightning module not available"
                 );
-                // Note: Can't update tracker in non-async error closure
-                AppError::with_category(ErrorCategory::PaymentTimeout, error_msg)
-                    .with_context(context.clone())
-            })?;
-
-        // Select gateway
-        let gateway = lightning_module
-            .select_gateway(&req.gateway_id)
-            .await
-            .ok_or_else(|| {
-                let error_msg = format!("Gateway {} not available", req.gateway_id);
-                error!(
-                    gateway_id = %req.gateway_id,
-                    payment_id = %payment_tracker.payment_id(),
-                    "Gateway not available"
-                );
-                // Note: Can't update tracker in non-async error closure
-                AppError::with_category(ErrorCategory::GatewayError, error_msg)
-                    .with_context(context.clone())
-            })?;
-
-        let tracked_amount = req
-            .amount_msat
-            .unwrap_or_else(|| Amount::from_msats(bolt11.amount_milli_satoshis().unwrap_or(0)));
-
-        // Create outgoing payment
-        let OutgoingLightningPayment {
-            payment_type,
-            contract_id,
-            fee,
-        } = lightning_module
-            .pay_bolt11_invoice(Some(gateway), bolt11, req.amount_msat)
-            .await
-            .map_err(|e| {
-                let error_msg = format!("Payment failed: {}", e);
-                error!(
-                    error = ?e,
-                    payment_id = %payment_tracker.payment_id(),
-                    "Payment failed during execution"
-                );
-                // Note: Can't update tracker in non-async error closure
                 AppError::with_category(ErrorCategory::PaymentTimeout, error_msg)
                     .with_context(context.clone())
             })?;
