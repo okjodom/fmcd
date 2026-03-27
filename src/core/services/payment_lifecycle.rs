@@ -15,7 +15,9 @@ use tokio::time::interval;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::core::multimint::MultiMint;
-use crate::core::operations::{OperationStore, OperationStoreStats, PaymentOperation, PaymentType};
+use crate::core::operations::{
+    OperationStatus, OperationStore, OperationStoreStats, PaymentOperation, PaymentType,
+};
 use crate::events::{EventBus, FmcdEvent};
 
 /// Configuration for the payment lifecycle manager
@@ -153,8 +155,12 @@ impl PaymentLifecycleManager {
             federation_id,
             payment_type: PaymentType::LightningReceive,
             amount_msat: Some(amount_msat),
+            fee_msat: None,
+            status: OperationStatus::Created,
             created_at: Utc::now(),
+            updated_at: Utc::now(),
             metadata,
+            last_error: None,
             correlation_id,
             claim_attempted: false,
             ecash_claimed: false,
@@ -170,16 +176,22 @@ impl PaymentLifecycleManager {
         operation_id: OperationId,
         federation_id: FederationId,
         amount_msat: Amount,
+        fee_msat: Option<u64>,
         metadata: Option<serde_json::Value>,
+        correlation_id: Option<String>,
     ) -> Result<()> {
         let operation = PaymentOperation {
             operation_id,
             federation_id,
             payment_type: PaymentType::LightningPay,
             amount_msat: Some(amount_msat),
+            fee_msat,
+            status: OperationStatus::Pending,
             created_at: Utc::now(),
+            updated_at: Utc::now(),
             metadata,
-            correlation_id: None,
+            last_error: None,
+            correlation_id,
             claim_attempted: false,
             ecash_claimed: false,
         };
@@ -200,8 +212,12 @@ impl PaymentLifecycleManager {
             federation_id,
             payment_type: PaymentType::OnchainDeposit,
             amount_msat: None, // Will be determined when deposit is confirmed
+            fee_msat: None,
+            status: OperationStatus::Created,
             created_at: Utc::now(),
+            updated_at: Utc::now(),
             metadata: None,
+            last_error: None,
             correlation_id,
             claim_attempted: false,
             ecash_claimed: false,
@@ -217,15 +233,21 @@ impl PaymentLifecycleManager {
         operation_id: OperationId,
         federation_id: FederationId,
         amount_sat: u64,
+        fee_sat: u64,
+        correlation_id: Option<String>,
     ) -> Result<()> {
         let operation = PaymentOperation {
             operation_id,
             federation_id,
             payment_type: PaymentType::OnchainWithdraw,
             amount_msat: Some(Amount::from_sats(amount_sat)),
+            fee_msat: Some(fee_sat.saturating_mul(1000)),
+            status: OperationStatus::Pending,
             created_at: Utc::now(),
+            updated_at: Utc::now(),
             metadata: None,
-            correlation_id: None,
+            last_error: None,
+            correlation_id,
             claim_attempted: false,
             ecash_claimed: false,
         };
@@ -408,8 +430,15 @@ impl PaymentLifecycleManager {
                         .get("amount_msat")
                         .and_then(|v| v.as_u64())
                         .map(Amount::from_msats),
+                    fee_msat: value
+                        .meta::<serde_json::Value>()
+                        .get("fee_msat")
+                        .and_then(|v| v.as_u64()),
+                    status: OperationStatus::Pending,
                     created_at,
+                    updated_at: created_at,
                     metadata: Some(value.meta()),
+                    last_error: None,
                     correlation_id: None,
                     claim_attempted: false,
                     ecash_claimed: false,
@@ -507,19 +536,27 @@ impl PaymentLifecycleManager {
                         // Update the operation in active_operations with the new state
                         operation_store.upsert(operation_mut.clone()).await;
 
-                        if operation_mut.ecash_claimed {
+                        if operation_mut.status.is_terminal() {
                             completed_operations.push(operation_mut.operation_id);
                         }
                     }
                     PaymentType::LightningPay => {
+                        let mut operation_mut = operation.clone();
                         if let Err(e) =
-                            Self::process_lightning_pay(&client, &operation, event_bus).await
+                            Self::process_lightning_pay(&client, &mut operation_mut, event_bus)
+                                .await
                         {
                             error!(
-                                operation_id = ?operation.operation_id,
+                                operation_id = ?operation_mut.operation_id,
                                 error = ?e,
                                 "Failed to process Lightning pay"
                             );
+                        }
+
+                        operation_store.upsert(operation_mut.clone()).await;
+
+                        if operation_mut.status.is_terminal() {
+                            completed_operations.push(operation_mut.operation_id);
                         }
                     }
                     PaymentType::OnchainDeposit => {
@@ -542,19 +579,27 @@ impl PaymentLifecycleManager {
                         // Update the operation in active_operations with the new state
                         operation_store.upsert(operation_mut.clone()).await;
 
-                        if operation_mut.ecash_claimed {
+                        if operation_mut.status.is_terminal() {
                             completed_operations.push(operation_mut.operation_id);
                         }
                     }
                     PaymentType::OnchainWithdraw => {
+                        let mut operation_mut = operation.clone();
                         if let Err(e) =
-                            Self::process_onchain_withdraw(&client, &operation, event_bus).await
+                            Self::process_onchain_withdraw(&client, &mut operation_mut, event_bus)
+                                .await
                         {
                             error!(
-                                operation_id = ?operation.operation_id,
+                                operation_id = ?operation_mut.operation_id,
                                 error = ?e,
                                 "Failed to process onchain withdrawal"
                             );
+                        }
+
+                        operation_store.upsert(operation_mut.clone()).await;
+
+                        if operation_mut.status.is_terminal() {
+                            completed_operations.push(operation_mut.operation_id);
                         }
                     }
                 }
@@ -645,6 +690,8 @@ impl PaymentLifecycleManager {
                     // Mark as successfully claimed
                     operation.ecash_claimed = true;
                     operation.claim_attempted = true;
+                    operation.status = OperationStatus::Succeeded;
+                    operation.updated_at = Utc::now();
 
                     // Publish success event
                     if let Some(amount) = operation.amount_msat {
@@ -674,6 +721,9 @@ impl PaymentLifecycleManager {
                     "Lightning receive canceled"
                 );
                 operation.claim_attempted = true;
+                operation.status = OperationStatus::Failed;
+                operation.last_error = Some(reason.to_string());
+                operation.updated_at = Utc::now();
             }
             LnReceiveState::WaitingForPayment { .. } => {
                 debug!(
@@ -696,7 +746,7 @@ impl PaymentLifecycleManager {
     /// Process a Lightning pay operation
     async fn process_lightning_pay(
         client: &ClientHandleArc,
-        operation: &PaymentOperation,
+        operation: &mut PaymentOperation,
         event_bus: &Arc<EventBus>,
     ) -> Result<()> {
         let lightning_module = client.get_first_module::<LightningClientModule>()?;
@@ -719,6 +769,9 @@ impl PaymentLifecycleManager {
                     "Lightning payment succeeded"
                 );
 
+                operation.status = OperationStatus::Succeeded;
+                operation.updated_at = Utc::now();
+
                 // Publish success event
                 if let Some(amount) = operation.amount_msat {
                     let event = FmcdEvent::PaymentSucceeded {
@@ -737,6 +790,10 @@ impl PaymentLifecycleManager {
                     error = %gateway_error,
                     "Lightning payment refunded"
                 );
+
+                operation.status = OperationStatus::Refunded;
+                operation.last_error = Some(gateway_error.to_string());
+                operation.updated_at = Utc::now();
 
                 // Publish refund event
                 let event = FmcdEvent::PaymentRefunded {
@@ -831,6 +888,8 @@ impl PaymentLifecycleManager {
                     // Mark as successfully claimed
                     operation.ecash_claimed = true;
                     operation.claim_attempted = true;
+                    operation.status = OperationStatus::Succeeded;
+                    operation.updated_at = Utc::now();
 
                     // Update the operation amount now that we know it
                     operation.amount_msat = Some(Amount::from_sats(btc_deposited.to_sat()));
@@ -870,6 +929,7 @@ impl PaymentLifecycleManager {
 
                 // Update amount now that we know it
                 operation.amount_msat = Some(Amount::from_sats(btc_deposited.to_sat()));
+                operation.updated_at = Utc::now();
             }
             DepositStateV2::Failed(reason) => {
                 error!(
@@ -878,6 +938,9 @@ impl PaymentLifecycleManager {
                     "Onchain deposit failed"
                 );
                 operation.claim_attempted = true;
+                operation.status = OperationStatus::Failed;
+                operation.last_error = Some(reason.to_string());
+                operation.updated_at = Utc::now();
             }
             DepositStateV2::WaitingForTransaction => {
                 debug!(
@@ -904,7 +967,7 @@ impl PaymentLifecycleManager {
     /// Process an onchain withdrawal operation
     async fn process_onchain_withdraw(
         client: &ClientHandleArc,
-        operation: &PaymentOperation,
+        operation: &mut PaymentOperation,
         event_bus: &Arc<EventBus>,
     ) -> Result<()> {
         let wallet_module = client.get_first_module::<WalletClientModule>()?;
@@ -922,6 +985,8 @@ impl PaymentLifecycleManager {
 
         match current_state {
             WithdrawState::Succeeded(txid) => {
+                operation.status = OperationStatus::Succeeded;
+                operation.updated_at = Utc::now();
                 info!(
                     operation_id = ?operation.operation_id,
                     txid = %txid,
@@ -941,6 +1006,9 @@ impl PaymentLifecycleManager {
                 }
             }
             WithdrawState::Failed(reason) => {
+                operation.status = OperationStatus::Failed;
+                operation.last_error = Some(reason.clone());
+                operation.updated_at = Utc::now();
                 error!(
                     operation_id = ?operation.operation_id,
                     reason = %reason,

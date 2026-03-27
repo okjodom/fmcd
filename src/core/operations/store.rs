@@ -18,6 +18,25 @@ pub enum PaymentType {
     OnchainWithdraw,
 }
 
+/// Normalized status for tracked operations.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OperationStatus {
+    Created,
+    Pending,
+    Succeeded,
+    Failed,
+    Refunded,
+}
+
+impl OperationStatus {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            OperationStatus::Succeeded | OperationStatus::Failed | OperationStatus::Refunded
+        )
+    }
+}
+
 /// Normalized information about a tracked payment-related operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentOperation {
@@ -25,8 +44,12 @@ pub struct PaymentOperation {
     pub federation_id: FederationId,
     pub payment_type: PaymentType,
     pub amount_msat: Option<Amount>,
+    pub fee_msat: Option<u64>,
+    pub status: OperationStatus,
     pub created_at: chrono::DateTime<Utc>,
+    pub updated_at: chrono::DateTime<Utc>,
     pub metadata: Option<serde_json::Value>,
+    pub last_error: Option<String>,
     pub correlation_id: Option<String>,
     /// Track if we've already attempted to claim the ecash.
     pub claim_attempted: bool,

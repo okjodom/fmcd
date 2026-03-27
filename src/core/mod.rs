@@ -853,7 +853,13 @@ impl FmcdCore {
         // Register with payment lifecycle manager for comprehensive monitoring
         if let Some(ref payment_lifecycle_manager) = self.payment_lifecycle_manager {
             if let Err(e) = payment_lifecycle_manager
-                .track_onchain_withdraw(operation_id, req.federation_id, amount.to_sat())
+                .track_onchain_withdraw(
+                    operation_id,
+                    req.federation_id,
+                    amount.to_sat(),
+                    absolute_fees.to_sat(),
+                    Some(context.correlation_id.clone()),
+                )
                 .await
             {
                 error!(
@@ -1083,6 +1089,10 @@ impl FmcdCore {
                     .with_context(context.clone())
             })?;
 
+        let tracked_amount = req
+            .amount_msat
+            .unwrap_or_else(|| Amount::from_msats(bolt11.amount_milli_satoshis().unwrap_or(0)));
+
         // Create outgoing payment
         let OutgoingLightningPayment {
             payment_type,
@@ -1108,6 +1118,26 @@ impl FmcdCore {
             PayType::Internal(op_id) => *op_id,
             PayType::Lightning(op_id) => *op_id,
         };
+
+        if let Some(ref payment_lifecycle_manager) = self.payment_lifecycle_manager {
+            if let Err(e) = payment_lifecycle_manager
+                .track_lightning_pay(
+                    operation_id,
+                    req.federation_id,
+                    tracked_amount,
+                    Some(fee.msats),
+                    None,
+                    Some(context.correlation_id.clone()),
+                )
+                .await
+            {
+                warn!(
+                    operation_id = ?operation_id,
+                    error = ?e,
+                    "Failed to register outgoing payment with payment lifecycle manager"
+                );
+            }
+        }
 
         // Wait for payment completion - inline the logic from wait_for_ln_payment
         use fedimint_ln_client::{InternalPayState, LnPayState};
@@ -1201,7 +1231,7 @@ impl FmcdCore {
             .succeed(
                 preimage.clone(),
                 req.amount_msat.map(|a| a.msats).unwrap_or(0),
-                0,
+                fee.msats,
             )
             .await;
 
