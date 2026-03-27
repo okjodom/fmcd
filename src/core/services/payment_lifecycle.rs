@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use chrono::Utc;
 use fedimint_client::ClientHandleArc;
 use fedimint_core::config::FederationId;
@@ -11,38 +10,13 @@ use fedimint_core::Amount;
 use fedimint_ln_client::{LightningClientModule, LnPayState, LnReceiveState};
 use fedimint_wallet_client::{DepositStateV2, WalletClientModule, WithdrawState};
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::interval;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::core::multimint::MultiMint;
+use crate::core::operations::{OperationStore, OperationStoreStats, PaymentOperation, PaymentType};
 use crate::events::{EventBus, FmcdEvent};
-
-/// Type of payment operation
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PaymentType {
-    LightningReceive,
-    LightningPay,
-    OnchainDeposit,
-    OnchainWithdraw,
-}
-
-/// Information about a payment operation being tracked
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PaymentOperation {
-    pub operation_id: OperationId,
-    pub federation_id: FederationId,
-    pub payment_type: PaymentType,
-    pub amount_msat: Option<Amount>,
-    pub created_at: chrono::DateTime<Utc>,
-    pub metadata: Option<serde_json::Value>,
-    pub correlation_id: Option<String>,
-    /// Track if we've already attempted to claim the ecash
-    pub claim_attempted: bool,
-    /// Track if ecash was successfully claimed
-    pub ecash_claimed: bool,
-}
 
 /// Configuration for the payment lifecycle manager
 #[derive(Debug, Clone)]
@@ -75,7 +49,7 @@ pub struct PaymentLifecycleManager {
     event_bus: Arc<EventBus>,
     multimint: Arc<MultiMint>,
     config: PaymentLifecycleConfig,
-    active_operations: Arc<RwLock<HashMap<OperationId, PaymentOperation>>>,
+    operation_store: Arc<OperationStore>,
     shutdown_tx: Arc<Mutex<Option<broadcast::Sender<()>>>>,
 }
 
@@ -89,8 +63,8 @@ impl PaymentLifecycleManager {
         Self {
             event_bus,
             multimint,
+            operation_store: Arc::new(OperationStore::new(config.max_operations_per_federation)),
             config,
-            active_operations: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: Arc::new(Mutex::new(None)),
         }
     }
@@ -119,7 +93,7 @@ impl PaymentLifecycleManager {
         // Clone necessary data for the monitoring task
         let event_bus = self.event_bus.clone();
         let multimint = self.multimint.clone();
-        let active_operations = self.active_operations.clone();
+        let operation_store = self.operation_store.clone();
         let poll_interval = self.config.poll_interval;
         let operation_timeout = self.config.operation_timeout;
         let claim_timeout = self.config.claim_timeout;
@@ -135,7 +109,7 @@ impl PaymentLifecycleManager {
                         if let Err(e) = Self::process_all_operations(
                             &event_bus,
                             &multimint,
-                            &active_operations,
+                            &operation_store,
                             operation_timeout,
                             claim_timeout,
                         ).await {
@@ -264,29 +238,7 @@ impl PaymentLifecycleManager {
         let operation_id = operation.operation_id;
         let federation_id = operation.federation_id;
         let payment_type = operation.payment_type.clone();
-
-        // Check federation limit
-        {
-            let operations = self.active_operations.read().await;
-            let federation_count = operations
-                .values()
-                .filter(|op| op.federation_id == federation_id)
-                .count();
-
-            if federation_count >= self.config.max_operations_per_federation {
-                return Err(anyhow!(
-                    "Federation {} has reached maximum operations limit ({})",
-                    federation_id,
-                    self.config.max_operations_per_federation
-                ));
-            }
-        }
-
-        // Add to active operations
-        {
-            let mut operations = self.active_operations.write().await;
-            operations.insert(operation_id, operation);
-        }
+        self.operation_store.insert(operation).await?;
 
         info!(
             operation_id = ?operation_id,
@@ -464,8 +416,7 @@ impl PaymentLifecycleManager {
                 };
 
                 // Add to active operations
-                let mut operations = self.active_operations.write().await;
-                operations.insert(operation_id, operation);
+                self.operation_store.insert(operation).await?;
                 recovered_count += 1;
 
                 debug!(
@@ -483,14 +434,11 @@ impl PaymentLifecycleManager {
     async fn process_all_operations(
         event_bus: &Arc<EventBus>,
         multimint: &Arc<MultiMint>,
-        active_operations: &Arc<RwLock<HashMap<OperationId, PaymentOperation>>>,
+        operation_store: &Arc<OperationStore>,
         operation_timeout: Duration,
         claim_timeout: Duration,
     ) -> Result<()> {
-        let operations_to_process = {
-            let operations = active_operations.read().await;
-            operations.clone()
-        };
+        let operations_to_process = operation_store.snapshot().await;
 
         if operations_to_process.is_empty() {
             return Ok(());
@@ -506,8 +454,8 @@ impl PaymentLifecycleManager {
         let mut timed_out_operations = Vec::new();
 
         // Group operations by federation for efficient processing
-        let mut operations_by_federation: HashMap<FederationId, Vec<PaymentOperation>> =
-            HashMap::new();
+        let mut operations_by_federation =
+            std::collections::HashMap::<FederationId, Vec<PaymentOperation>>::new();
 
         for (operation_id, operation) in operations_to_process {
             // Check timeout
@@ -557,12 +505,7 @@ impl PaymentLifecycleManager {
                         }
 
                         // Update the operation in active_operations with the new state
-                        let mut operations = active_operations.write().await;
-                        if let Some(active_op) = operations.get_mut(&operation_mut.operation_id) {
-                            active_op.claim_attempted = operation_mut.claim_attempted;
-                            active_op.ecash_claimed = operation_mut.ecash_claimed;
-                        }
-                        drop(operations);
+                        operation_store.upsert(operation_mut.clone()).await;
 
                         if operation_mut.ecash_claimed {
                             completed_operations.push(operation_mut.operation_id);
@@ -597,13 +540,7 @@ impl PaymentLifecycleManager {
                         }
 
                         // Update the operation in active_operations with the new state
-                        let mut operations = active_operations.write().await;
-                        if let Some(active_op) = operations.get_mut(&operation_mut.operation_id) {
-                            active_op.claim_attempted = operation_mut.claim_attempted;
-                            active_op.ecash_claimed = operation_mut.ecash_claimed;
-                            active_op.amount_msat = operation_mut.amount_msat;
-                        }
-                        drop(operations);
+                        operation_store.upsert(operation_mut.clone()).await;
 
                         if operation_mut.ecash_claimed {
                             completed_operations.push(operation_mut.operation_id);
@@ -626,15 +563,13 @@ impl PaymentLifecycleManager {
 
         // Remove completed and timed out operations
         if !completed_operations.is_empty() || !timed_out_operations.is_empty() {
-            let mut operations = active_operations.write().await;
-
             for operation_id in &completed_operations {
-                operations.remove(operation_id);
+                operation_store.remove(operation_id).await;
                 info!(operation_id = ?operation_id, "Payment operation completed successfully");
             }
 
             for operation_id in &timed_out_operations {
-                operations.remove(operation_id);
+                operation_store.remove(operation_id).await;
                 warn!(operation_id = ?operation_id, "Payment operation timed out");
             }
         }
@@ -1037,27 +972,24 @@ impl PaymentLifecycleManager {
 
     /// Get statistics about active operations
     pub async fn get_stats(&self) -> PaymentLifecycleStats {
-        let operations = self.active_operations.read().await;
-        let mut by_type: HashMap<PaymentType, usize> = HashMap::new();
-        let mut by_federation: HashMap<FederationId, usize> = HashMap::new();
-
-        for operation in operations.values() {
-            *by_type.entry(operation.payment_type.clone()).or_insert(0) += 1;
-            *by_federation.entry(operation.federation_id).or_insert(0) += 1;
-        }
-
-        PaymentLifecycleStats {
-            total_active_operations: operations.len(),
-            operations_by_type: by_type,
-            operations_by_federation: by_federation,
-        }
+        self.operation_store.stats().await.into()
     }
 }
 
 /// Statistics about the payment lifecycle manager
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PaymentLifecycleStats {
     pub total_active_operations: usize,
-    pub operations_by_type: HashMap<PaymentType, usize>,
-    pub operations_by_federation: HashMap<FederationId, usize>,
+    pub operations_by_type: std::collections::HashMap<PaymentType, usize>,
+    pub operations_by_federation: std::collections::HashMap<FederationId, usize>,
+}
+
+impl From<OperationStoreStats> for PaymentLifecycleStats {
+    fn from(stats: OperationStoreStats) -> Self {
+        Self {
+            total_active_operations: stats.total_active_operations,
+            operations_by_type: stats.operations_by_type,
+            operations_by_federation: stats.operations_by_federation,
+        }
+    }
 }
