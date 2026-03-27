@@ -4,8 +4,6 @@ use anyhow::anyhow;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use fedimint_client::backup::Metadata;
-use fedimint_client::ClientHandleArc;
 use fedimint_core::config::FederationId;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -20,18 +18,13 @@ pub struct BackupRequest {
     pub federation_id: FederationId,
 }
 
-async fn _backup(client: ClientHandleArc, req: BackupRequest) -> Result<(), AppError> {
-    client
-        .backup_to_federation(Metadata::from_json_serialized(req.metadata))
-        .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e))
-}
-
 pub async fn handle_ws(state: AppState, v: Value) -> Result<Value, AppError> {
     let v = serde_json::from_value::<BackupRequest>(v)
         .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, anyhow!("Invalid request: {}", e)))?;
-    let client = state.get_client(v.federation_id).await?;
-    _backup(client, v).await?;
+    state
+        .core
+        .backup_federation(v.federation_id, v.metadata)
+        .await?;
     Ok(json!(()))
 }
 
@@ -40,7 +33,9 @@ pub async fn handle_rest(
     State(state): State<AppState>,
     Json(req): Json<BackupRequest>,
 ) -> Result<Json<()>, AppError> {
-    let client = state.get_client(req.federation_id).await?;
-    _backup(client, req).await?;
+    state
+        .core
+        .backup_federation(req.federation_id, req.metadata)
+        .await?;
     Ok(Json(()))
 }

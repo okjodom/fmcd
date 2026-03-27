@@ -27,8 +27,8 @@ use self::multimint::MultiMint;
 use self::operations::payment::InvoiceTracker;
 use self::operations::PaymentTracker;
 use self::services::{
-    BalanceMonitor, BalanceMonitorConfig, DepositMonitor, DepositMonitorConfig, LightningService,
-    PaymentLifecycleConfig, PaymentLifecycleManager,
+    BalanceMonitor, BalanceMonitorConfig, ClientLifecycleService, DepositMonitor,
+    DepositMonitorConfig, LightningService, PaymentLifecycleConfig, PaymentLifecycleManager,
 };
 use crate::error::{AppError, ErrorCategory};
 use crate::events::handlers::{LoggingEventHandler, MetricsEventHandler};
@@ -190,6 +190,7 @@ pub struct FmcdCore {
     pub multimint: Arc<MultiMint>,
     pub start_time: Instant,
     pub event_bus: Arc<EventBus>,
+    pub client_lifecycle_service: Arc<ClientLifecycleService>,
     pub lightning_service: Arc<LightningService>,
     pub deposit_monitor: Option<Arc<DepositMonitor>>,
     pub balance_monitor: Option<Arc<BalanceMonitor>>,
@@ -208,6 +209,10 @@ impl FmcdCore {
 
         // Initialize event bus with reasonable capacity
         let event_bus = Arc::new(EventBus::new(1000));
+        let client_lifecycle_service = Arc::new(ClientLifecycleService::new(
+            multimint.clone(),
+            event_bus.clone(),
+        ));
         let lightning_service = Arc::new(LightningService::new());
 
         // Register default event handlers
@@ -256,6 +261,7 @@ impl FmcdCore {
             multimint,
             start_time: Instant::now(),
             event_bus,
+            client_lifecycle_service,
             lightning_service,
             deposit_monitor: Some(deposit_monitor),
             balance_monitor: Some(balance_monitor),
@@ -309,30 +315,9 @@ impl FmcdCore {
         &self,
         federation_id: FederationId,
     ) -> Result<ClientHandleArc, AppError> {
-        info!(
-            federation_id = %federation_id,
-            "Retrieving client for federation"
-        );
-
-        match self.multimint.get(&federation_id).await {
-            Some(client) => {
-                info!(
-                    federation_id = %federation_id,
-                    "Client retrieved successfully"
-                );
-                Ok(client)
-            }
-            None => {
-                warn!(
-                    federation_id = %federation_id,
-                    "No client found for federation"
-                );
-                Err(AppError::with_category(
-                    ErrorCategory::FederationNotFound,
-                    format!("No client found for federation id: {}", federation_id),
-                ))
-            }
-        }
+        self.client_lifecycle_service
+            .get_client(federation_id)
+            .await
     }
 
     /// Get a client by federation ID prefix
@@ -340,35 +325,9 @@ impl FmcdCore {
         &self,
         federation_id_prefix: &FederationIdPrefix,
     ) -> Result<ClientHandleArc, AppError> {
-        info!(
-            federation_id_prefix = %federation_id_prefix,
-            "Retrieving client for federation prefix"
-        );
-
-        let client = self.multimint.get_by_prefix(federation_id_prefix).await;
-
-        match client {
-            Some(client) => {
-                info!(
-                    federation_id_prefix = %federation_id_prefix,
-                    "Client retrieved successfully by prefix"
-                );
-                Ok(client)
-            }
-            None => {
-                warn!(
-                    federation_id_prefix = %federation_id_prefix,
-                    "No client found for federation prefix"
-                );
-                Err(AppError::with_category(
-                    ErrorCategory::FederationNotFound,
-                    format!(
-                        "No client found for federation id prefix: {}",
-                        federation_id_prefix
-                    ),
-                ))
-            }
-        }
+        self.client_lifecycle_service
+            .get_client_by_prefix(federation_id_prefix)
+            .await
     }
 
     /// Join a federation with an invite code
@@ -377,68 +336,23 @@ impl FmcdCore {
         invite_code: InviteCode,
         context: Option<RequestContext>,
     ) -> Result<JoinFederationResponse> {
-        use chrono::Utc;
-
-        use crate::events::FmcdEvent;
-
-        let federation_id = invite_code.federation_id();
-
-        info!(
-            federation_id = %federation_id,
-            "Attempting to join federation"
-        );
-
-        // Clone multimint which is cheap due to Arc
-        let mut multimint = (*self.multimint).clone();
-
-        let this_federation_id = multimint
-            .register_new(invite_code.clone())
+        self.client_lifecycle_service
+            .join_federation(invite_code, context)
             .await
-            .inspect_err(|e| {
-                // Emit federation connection failed event
-                let event_bus = self.event_bus.clone();
-                let federation_id_str = federation_id.to_string();
-                let correlation_id = context.as_ref().map(|c| c.correlation_id.clone());
-                let error_msg = e.to_string();
+    }
 
-                tokio::spawn(async move {
-                    let event = FmcdEvent::FederationDisconnected {
-                        federation_id: federation_id_str,
-                        reason: format!("Failed to join: {}", error_msg),
-                        correlation_id,
-                        timestamp: Utc::now(),
-                    };
-                    let _ = event_bus.publish(event).await;
-                });
-            })?;
+    pub async fn get_federation_configs(&self) -> Result<serde_json::Value, AppError> {
+        self.client_lifecycle_service.get_configs().await
+    }
 
-        // Emit federation connection success event
-        let event_bus = self.event_bus.clone();
-        let federation_id_str = this_federation_id.to_string();
-        let correlation_id = context.as_ref().map(|c| c.correlation_id.clone());
-
-        tokio::spawn(async move {
-            let event = FmcdEvent::FederationConnected {
-                federation_id: federation_id_str,
-                correlation_id,
-                timestamp: Utc::now(),
-            };
-            let _ = event_bus.publish(event).await;
-        });
-
-        // Get all federation IDs
-        let federation_ids = self.multimint.ids().await.into_iter().collect::<Vec<_>>();
-
-        info!(
-            federation_id = %this_federation_id,
-            total_federations = federation_ids.len(),
-            "Successfully joined federation"
-        );
-
-        Ok(JoinFederationResponse {
-            this_federation_id,
-            federation_ids,
-        })
+    pub async fn backup_federation(
+        &self,
+        federation_id: FederationId,
+        metadata: BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
+        self.client_lifecycle_service
+            .backup_to_federation(federation_id, metadata)
+            .await
     }
 
     /// Get wallet info for all federations
