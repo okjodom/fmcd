@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use time::format_description::well_known::iso8601;
 use time::OffsetDateTime;
 
+use crate::core::operations::PaymentOperation;
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -37,12 +38,45 @@ pub struct OperationOutput {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackedOperationOutput {
+    pub id: OperationId,
+    pub federation_id: FederationId,
     pub payment_type: String,
     pub status: String,
     pub amount_msat: Option<u64>,
     pub fee_msat: Option<u64>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     pub last_error: Option<String>,
+    pub claim_attempted: bool,
+    pub ecash_claimed: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedOperationsResponse {
+    pub operations: Vec<TrackedOperationOutput>,
+}
+
+fn tracked_operation_output(operation: PaymentOperation) -> TrackedOperationOutput {
+    TrackedOperationOutput {
+        id: operation.operation_id,
+        federation_id: operation.federation_id,
+        payment_type: format!("{:?}", operation.payment_type),
+        status: format!("{:?}", operation.status),
+        amount_msat: operation.amount_msat.map(|amount| amount.msats),
+        fee_msat: operation.fee_msat,
+        created_at: operation.created_at,
+        updated_at: operation.updated_at,
+        correlation_id: operation.correlation_id,
+        metadata: operation.metadata,
+        last_error: operation.last_error,
+        claim_attempted: operation.claim_attempted,
+        ecash_claimed: operation.ecash_claimed,
+    }
 }
 
 async fn _operations(
@@ -82,16 +116,11 @@ async fn _operations(
             creation_time,
             operation_kind: v.operation_module_kind().to_owned(),
             operation_meta: v.meta(),
-            tracked_operation: state.core.get_tracked_operation(&k.operation_id).await.map(
-                |operation| TrackedOperationOutput {
-                    payment_type: format!("{:?}", operation.payment_type),
-                    status: format!("{:?}", operation.status),
-                    amount_msat: operation.amount_msat.map(|amount| amount.msats),
-                    fee_msat: operation.fee_msat,
-                    updated_at: operation.updated_at,
-                    last_error: operation.last_error,
-                },
-            ),
+            tracked_operation: state
+                .core
+                .get_tracked_operation(&k.operation_id)
+                .await
+                .map(tracked_operation_output),
             outcome: v.outcome(),
         });
     }
@@ -99,6 +128,21 @@ async fn _operations(
     Ok(json!({
         "operations": operations,
     }))
+}
+
+async fn _tracked_operations(
+    state: &AppState,
+    req: ListOperationsRequest,
+) -> Result<TrackedOperationsResponse, AppError> {
+    let operations = state
+        .core
+        .list_tracked_operations(req.federation_id, req.limit)
+        .await
+        .into_iter()
+        .map(tracked_operation_output)
+        .collect();
+
+    Ok(TrackedOperationsResponse { operations })
 }
 
 pub async fn handle_ws(state: AppState, v: Value) -> Result<Value, AppError> {
@@ -121,5 +165,14 @@ pub async fn handle_rest(
 ) -> Result<Json<Value>, AppError> {
     let client = state.get_client(req.federation_id).await?;
     let operations = _operations(&state, client, req).await?;
+    Ok(Json(operations))
+}
+
+#[axum_macros::debug_handler]
+pub async fn handle_tracked_rest(
+    State(state): State<AppState>,
+    Json(req): Json<ListOperationsRequest>,
+) -> Result<Json<TrackedOperationsResponse>, AppError> {
+    let operations = _tracked_operations(&state, req).await?;
     Ok(Json(operations))
 }

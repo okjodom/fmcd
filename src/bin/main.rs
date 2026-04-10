@@ -351,6 +351,10 @@ fn fedimint_v2_rest() -> Router<AppState> {
         // .route("/printsecret", get(handle_printsecret)) TODO: should I expose this
         // under admin?
         .route("/operations", post(admin::operations::handle_rest))
+        .route(
+            "/operations/tracked",
+            post(admin::operations::handle_tracked_rest),
+        )
         .route("/module", post(admin::module::handle_rest))
         .route("/config", get(admin::config::handle_rest));
 
