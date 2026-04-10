@@ -266,10 +266,11 @@ async fn test_event_handler_failure_isolation() {
     event_bus.register_handler(logging_handler).await;
 
     let event = FmcdEvent::PaymentSucceeded {
-        payment_id: "test_payment".to_string(),
+        operation_id: "test_operation_id".to_string(),
         federation_id: "test_federation".to_string(),
+        amount_msat: 1000,
         preimage: "test_preimage".to_string(),
-        fee_msat: 100,
+        fee_msat: Some(100),
         correlation_id: Some("test_correlation".to_string()),
         timestamp: chrono::Utc::now(),
     };

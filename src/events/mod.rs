@@ -25,13 +25,16 @@ pub enum FmcdEvent {
         operation_id: String,
         federation_id: String,
         amount_msat: u64,
+        fee_msat: Option<u64>,
         preimage: String,
+        correlation_id: Option<String>,
         timestamp: DateTime<Utc>,
     },
     PaymentRefunded {
         operation_id: String,
         federation_id: String,
         reason: String,
+        correlation_id: Option<String>,
         timestamp: DateTime<Utc>,
     },
     PaymentFailed {
@@ -208,8 +211,8 @@ impl FmcdEvent {
     pub fn correlation_id(&self) -> Option<&String> {
         match self {
             FmcdEvent::PaymentInitiated { correlation_id, .. } => correlation_id.as_ref(),
-            FmcdEvent::PaymentSucceeded { .. } => None,
-            FmcdEvent::PaymentRefunded { .. } => None,
+            FmcdEvent::PaymentSucceeded { correlation_id, .. } => correlation_id.as_ref(),
+            FmcdEvent::PaymentRefunded { correlation_id, .. } => correlation_id.as_ref(),
             FmcdEvent::PaymentFailed { correlation_id, .. } => correlation_id.as_ref(),
             FmcdEvent::InvoiceCreated { correlation_id, .. } => correlation_id.as_ref(),
             FmcdEvent::InvoicePaid { correlation_id, .. } => correlation_id.as_ref(),

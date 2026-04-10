@@ -471,7 +471,9 @@ mod tests {
             operation_id: "test-payment".to_string(),
             federation_id: "test-fed".to_string(),
             amount_msat: 50000,
+            fee_msat: Some(50),
             preimage: "test-preimage".to_string(),
+            correlation_id: Some("test-correlation-id".to_string()),
             timestamp: Utc::now(),
         };
 

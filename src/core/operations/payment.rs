@@ -197,7 +197,9 @@ impl PaymentTracker {
             operation_id: self.payment_id.clone(),
             federation_id: self.federation_id.clone(),
             amount_msat,
+            fee_msat: Some(fee_msat),
             preimage,
+            correlation_id: self.correlation_id.clone(),
             timestamp: Utc::now(),
         };
 

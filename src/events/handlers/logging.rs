@@ -44,7 +44,9 @@ impl EventHandler for LoggingEventHandler {
                 operation_id,
                 federation_id,
                 amount_msat,
+                fee_msat,
                 preimage,
+                correlation_id,
                 timestamp,
             } => {
                 info!(
@@ -52,7 +54,9 @@ impl EventHandler for LoggingEventHandler {
                     operation_id = %operation_id,
                     federation_id = %federation_id,
                     amount_msat = amount_msat,
+                    fee_msat = ?fee_msat,
                     preimage = %sanitize_preimage(&preimage),
+                    correlation_id = ?correlation_id,
                     timestamp = %timestamp,
                     "Payment succeeded"
                 );
@@ -376,6 +380,7 @@ impl EventHandler for LoggingEventHandler {
                 operation_id,
                 federation_id,
                 reason,
+                correlation_id,
                 timestamp,
             } => {
                 info!(
@@ -383,6 +388,7 @@ impl EventHandler for LoggingEventHandler {
                     operation_id = %operation_id,
                     federation_id = %federation_id,
                     reason = %reason,
+                    correlation_id = ?correlation_id,
                     timestamp = %timestamp,
                     "Payment refunded"
                 );
@@ -460,8 +466,10 @@ mod tests {
             operation_id: "test_operation_id".to_string(),
             federation_id: "test_federation_id".to_string(),
             amount_msat: 1000,
+            fee_msat: Some(10),
             preimage: "a1b2c3d4e5f6789012345678901234567890123456789012345678901234567890"
                 .to_string(),
+            correlation_id: Some("test-correlation-id".to_string()),
             timestamp: Utc::now(),
         };
 

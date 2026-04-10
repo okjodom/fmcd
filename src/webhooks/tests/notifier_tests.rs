@@ -123,7 +123,9 @@ fn test_create_webhook_payload() {
         operation_id: "test-operation".to_string(),
         federation_id: "test-fed".to_string(),
         amount_msat: 1000,
+        fee_msat: Some(10),
         preimage: "test-preimage".to_string(),
+        correlation_id: Some("test-correlation-id".to_string()),
         timestamp: Utc::now(),
     };
 
@@ -132,7 +134,7 @@ fn test_create_webhook_payload() {
         .expect("Failed to create payload");
 
     assert_eq!(payload["type"], "payment_succeeded");
-    assert!(payload["correlation_id"].is_null());
+    assert_eq!(payload["correlation_id"], "test-correlation-id");
     assert!(payload["id"].is_string());
     assert!(payload["timestamp"].is_string());
     assert!(payload["data"].is_object());
@@ -197,7 +199,9 @@ fn test_sensitive_data_sanitization() {
         operation_id: "test-operation".to_string(),
         federation_id: "test-fed".to_string(),
         amount_msat: 1000,
+        fee_msat: Some(10),
         preimage: "sensitive-preimage-data".to_string(),
+        correlation_id: Some("test-correlation-id".to_string()),
         timestamp: Utc::now(),
     };
 

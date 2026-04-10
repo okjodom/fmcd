@@ -121,9 +121,15 @@ impl EventHandler for MetricsEventHandler {
             FmcdEvent::PaymentSucceeded {
                 federation_id,
                 amount_msat,
+                fee_msat,
                 ..
             } => {
-                self.record_payment_metrics(&federation_id, "succeeded", Some(amount_msat), None);
+                self.record_payment_metrics(
+                    &federation_id,
+                    "succeeded",
+                    Some(amount_msat),
+                    fee_msat,
+                );
             }
             FmcdEvent::PaymentFailed { federation_id, .. } => {
                 self.record_payment_metrics(&federation_id, "failed", None, None);
@@ -284,7 +290,9 @@ mod tests {
             operation_id: "test_operation_id".to_string(),
             federation_id: "test_federation_id".to_string(),
             amount_msat: 1000,
+            fee_msat: Some(10),
             preimage: "test_preimage".to_string(),
+            correlation_id: Some("test-correlation-id".to_string()),
             timestamp: Utc::now(),
         };
 

@@ -801,7 +801,9 @@ impl PaymentLifecycleManager {
                         operation_id: format!("{:?}", operation.operation_id),
                         federation_id: operation.federation_id.to_string(),
                         amount_msat: amount.msats,
+                        fee_msat: operation.fee_msat,
                         preimage,
+                        correlation_id: operation.correlation_id.clone(),
                         timestamp: Utc::now(),
                     };
                     let _ = event_bus.publish(event).await;
@@ -823,6 +825,7 @@ impl PaymentLifecycleManager {
                     operation_id: format!("{:?}", operation.operation_id),
                     federation_id: operation.federation_id.to_string(),
                     reason: gateway_error.to_string(),
+                    correlation_id: operation.correlation_id.clone(),
                     timestamp: Utc::now(),
                 };
                 let _ = event_bus.publish(event).await;
