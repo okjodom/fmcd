@@ -223,6 +223,8 @@ pub struct BulkStatusItem {
     pub operation_id: OperationId,
     pub status: InvoiceStatus,
     pub settlement: Option<SettlementInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracked_status: Option<String>,
     pub last_updated: chrono::DateTime<Utc>,
 }
 
@@ -261,6 +263,7 @@ pub async fn handle_bulk_status(
                     operation_id,
                     status: status_response.status,
                     settlement: status_response.settlement,
+                    tracked_status: status_response.tracked_status,
                     last_updated: status_response.last_updated,
                 });
             }

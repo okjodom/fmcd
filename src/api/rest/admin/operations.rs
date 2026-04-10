@@ -1,6 +1,6 @@
 use std::time::UNIX_EPOCH;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use fedimint_client::ClientHandleArc;
@@ -145,6 +145,23 @@ async fn _tracked_operations(
     Ok(TrackedOperationsResponse { operations })
 }
 
+async fn _tracked_operation_by_id(
+    state: &AppState,
+    operation_id: OperationId,
+) -> Result<TrackedOperationOutput, AppError> {
+    state
+        .core
+        .get_tracked_operation(&operation_id)
+        .await
+        .map(tracked_operation_output)
+        .ok_or_else(|| {
+            AppError::new(
+                StatusCode::NOT_FOUND,
+                anyhow::anyhow!("Tracked operation not found: {:?}", operation_id),
+            )
+        })
+}
+
 pub async fn handle_ws(state: AppState, v: Value) -> Result<Value, AppError> {
     let v = serde_json::from_value::<ListOperationsRequest>(v).map_err(|e| {
         AppError::new(
@@ -175,4 +192,20 @@ pub async fn handle_tracked_rest(
 ) -> Result<Json<TrackedOperationsResponse>, AppError> {
     let operations = _tracked_operations(&state, req).await?;
     Ok(Json(operations))
+}
+
+#[axum_macros::debug_handler]
+pub async fn handle_tracked_rest_by_operation_id(
+    State(state): State<AppState>,
+    Path(operation_id_str): Path<String>,
+) -> Result<Json<TrackedOperationOutput>, AppError> {
+    let operation_id = operation_id_str.parse::<OperationId>().map_err(|e| {
+        AppError::new(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("Invalid operation ID: {}", e),
+        )
+    })?;
+
+    let operation = _tracked_operation_by_id(&state, operation_id).await?;
+    Ok(Json(operation))
 }

@@ -278,6 +278,9 @@ async fn track_metrics(req: Request, next: Next) -> impl IntoResponse {
 /// - `/v2/admin/restore`: Restore the previously created backup of mint notes
 ///   (with `backup` command).
 /// - `/v2/admin/operations`: List operations.
+/// - `/v2/admin/operations/tracked`: List normalized tracked operations.
+/// - `/v2/admin/operations/tracked/:operation_id`: Inspect one normalized
+///   tracked operation.
 /// - `/v2/admin/module`: Call a module subcommand.
 /// - `/v2/admin/config`: Returns the client config.
 ///
@@ -354,6 +357,10 @@ fn fedimint_v2_rest() -> Router<AppState> {
         .route(
             "/operations/tracked",
             post(admin::operations::handle_tracked_rest),
+        )
+        .route(
+            "/operations/tracked/:operation_id",
+            get(admin::operations::handle_tracked_rest_by_operation_id),
         )
         .route("/module", post(admin::module::handle_rest))
         .route("/config", get(admin::config::handle_rest));
