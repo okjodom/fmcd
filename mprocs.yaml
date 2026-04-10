@@ -1,11 +1,38 @@
 procs:
   user:
-    shell: bash # if on Linux
+    shell: >
+      bash -lc '
+        set -a
+        . ./.env
+        set +a
+        export FMCD_URL="http://$FMCD_ADDR"
+        export FMCD_PASS="$FMCD_PASSWORD"
+        exec bash
+      '
     # shell: zsh # if on macOS
     stop: SIGKILL
+  wscat:
+    shell: |
+      set -a
+      . ./.env
+      set +a
+      FMCD_HOST="${FMCD_ADDR%:*}"
+      FMCD_PORT="${FMCD_ADDR##*:}"
+      while ! nc -z "$FMCD_HOST" "$FMCD_PORT"; do
+        echo "Waiting for fmcd to be ready..."
+        sleep 1
+      done
+      echo "fmcd is up - executing wscat (requires FMCD_MODE=ws)"
+      wscat -c "ws://$FMCD_HOST:$FMCD_PORT/ws" -H "Authorization: Bearer $FMCD_PASSWORD"
+    autostart: false
+    stop: SIGTERM
   fmcd:
     shell: export RUST_BACKTRACE=1 && cargo run --manifest-path ./Cargo.toml
     stop: SIGTERM
   ngrok:
-    shell: ngrok http http://localhost:3333
+    shell: |
+      set -a
+      . ./.env
+      set +a
+      ngrok http "http://$FMCD_ADDR"
     stop: SIGTERM
