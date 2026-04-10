@@ -29,48 +29,72 @@ pub struct OperationOutput {
     pub operation_kind: String,
     pub operation_meta: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracked_operation: Option<TrackedOperationOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedOperationOutput {
+    pub payment_type: String,
+    pub status: String,
+    pub amount_msat: Option<u64>,
+    pub fee_msat: Option<u64>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub last_error: Option<String>,
+}
+
 async fn _operations(
+    state: &AppState,
     client: ClientHandleArc,
     req: ListOperationsRequest,
 ) -> Result<Value, AppError> {
     const ISO8601_CONFIG: iso8601::EncodedConfig = iso8601::Config::DEFAULT
         .set_formatted_components(iso8601::FormattedComponents::DateTime)
         .encode();
-    let operations = client
+    let mut operations = Vec::new();
+
+    for (k, v) in client
         .operation_log()
         .paginate_operations_rev(req.limit, None)
         .await
-        .into_iter()
-        .map(|(k, v)| -> Result<OperationOutput, anyhow::Error> {
-            let creation_time = OffsetDateTime::from_unix_timestamp(
-                k.creation_time
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|e| {
-                        anyhow::anyhow!("Couldn't convert time from SystemTime to timestamp: {}", e)
-                    })?
-                    .as_secs() as i64,
+    {
+        let creation_time = OffsetDateTime::from_unix_timestamp(
+            k.creation_time
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| {
+                    anyhow::anyhow!("Couldn't convert time from SystemTime to timestamp: {}", e)
+                })?
+                .as_secs() as i64,
+        )
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Couldn't convert time from SystemTime to OffsetDateTime: {}",
+                e
             )
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Couldn't convert time from SystemTime to OffsetDateTime: {}",
-                    e
-                )
-            })?
-            .format(&iso8601::Iso8601::<ISO8601_CONFIG>)
-            .map_err(|e| anyhow::anyhow!("Couldn't format OffsetDateTime as ISO8601: {}", e))?;
+        })?
+        .format(&iso8601::Iso8601::<ISO8601_CONFIG>)
+        .map_err(|e| anyhow::anyhow!("Couldn't format OffsetDateTime as ISO8601: {}", e))?;
 
-            Ok(OperationOutput {
-                id: k.operation_id,
-                creation_time,
-                operation_kind: v.operation_module_kind().to_owned(),
-                operation_meta: v.meta(),
-                outcome: v.outcome(),
-            })
-        })
-        .collect::<Result<Vec<_>, anyhow::Error>>()?;
+        operations.push(OperationOutput {
+            id: k.operation_id,
+            creation_time,
+            operation_kind: v.operation_module_kind().to_owned(),
+            operation_meta: v.meta(),
+            tracked_operation: state.core.get_tracked_operation(&k.operation_id).await.map(
+                |operation| TrackedOperationOutput {
+                    payment_type: format!("{:?}", operation.payment_type),
+                    status: format!("{:?}", operation.status),
+                    amount_msat: operation.amount_msat.map(|amount| amount.msats),
+                    fee_msat: operation.fee_msat,
+                    updated_at: operation.updated_at,
+                    last_error: operation.last_error,
+                },
+            ),
+            outcome: v.outcome(),
+        });
+    }
 
     Ok(json!({
         "operations": operations,
@@ -85,7 +109,7 @@ pub async fn handle_ws(state: AppState, v: Value) -> Result<Value, AppError> {
         )
     })?;
     let client = state.get_client(v.federation_id).await?;
-    let operations = _operations(client, v).await?;
+    let operations = _operations(&state, client, v).await?;
     let operations_json = json!(operations);
     Ok(operations_json)
 }
@@ -96,6 +120,6 @@ pub async fn handle_rest(
     Json(req): Json<ListOperationsRequest>,
 ) -> Result<Json<Value>, AppError> {
     let client = state.get_client(req.federation_id).await?;
-    let operations = _operations(client, req).await?;
+    let operations = _operations(&state, client, req).await?;
     Ok(Json(operations))
 }

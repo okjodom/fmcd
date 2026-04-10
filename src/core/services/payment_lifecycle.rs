@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -60,12 +61,16 @@ impl PaymentLifecycleManager {
     pub fn new(
         event_bus: Arc<EventBus>,
         multimint: Arc<MultiMint>,
+        data_dir: PathBuf,
         config: PaymentLifecycleConfig,
     ) -> Self {
         Self {
             event_bus,
             multimint,
-            operation_store: Arc::new(OperationStore::new(config.max_operations_per_federation)),
+            operation_store: Arc::new(OperationStore::new(
+                config.max_operations_per_federation,
+                data_dir.join("operation_store.json"),
+            )),
             config,
             shutdown_tx: Arc::new(Mutex::new(None)),
         }
@@ -138,6 +143,20 @@ impl PaymentLifecycleManager {
             let _ = shutdown_tx.send(());
         }
         Ok(())
+    }
+
+    pub async fn get_operation(&self, operation_id: &OperationId) -> Option<PaymentOperation> {
+        self.operation_store.get(operation_id).await
+    }
+
+    pub async fn list_operations(
+        &self,
+        federation_id: FederationId,
+        limit: usize,
+    ) -> Vec<PaymentOperation> {
+        self.operation_store
+            .list_by_federation(federation_id, limit)
+            .await
     }
 
     /// Add a new Lightning receive operation to track
@@ -467,7 +486,7 @@ impl PaymentLifecycleManager {
         operation_timeout: Duration,
         claim_timeout: Duration,
     ) -> Result<()> {
-        let operations_to_process = operation_store.snapshot().await;
+        let operations_to_process = operation_store.active_snapshot().await;
 
         if operations_to_process.is_empty() {
             return Ok(());
@@ -534,7 +553,7 @@ impl PaymentLifecycleManager {
                         }
 
                         // Update the operation in active_operations with the new state
-                        operation_store.upsert(operation_mut.clone()).await;
+                        let _ = operation_store.upsert(operation_mut.clone()).await;
 
                         if operation_mut.status.is_terminal() {
                             completed_operations.push(operation_mut.operation_id);
@@ -553,7 +572,7 @@ impl PaymentLifecycleManager {
                             );
                         }
 
-                        operation_store.upsert(operation_mut.clone()).await;
+                        let _ = operation_store.upsert(operation_mut.clone()).await;
 
                         if operation_mut.status.is_terminal() {
                             completed_operations.push(operation_mut.operation_id);
@@ -577,7 +596,7 @@ impl PaymentLifecycleManager {
                         }
 
                         // Update the operation in active_operations with the new state
-                        operation_store.upsert(operation_mut.clone()).await;
+                        let _ = operation_store.upsert(operation_mut.clone()).await;
 
                         if operation_mut.status.is_terminal() {
                             completed_operations.push(operation_mut.operation_id);
@@ -596,7 +615,7 @@ impl PaymentLifecycleManager {
                             );
                         }
 
-                        operation_store.upsert(operation_mut.clone()).await;
+                        let _ = operation_store.upsert(operation_mut.clone()).await;
 
                         if operation_mut.status.is_terminal() {
                             completed_operations.push(operation_mut.operation_id);
@@ -606,15 +625,19 @@ impl PaymentLifecycleManager {
             }
         }
 
-        // Remove completed and timed out operations
+        // Persist timed out operations as terminal records instead of deleting
         if !completed_operations.is_empty() || !timed_out_operations.is_empty() {
             for operation_id in &completed_operations {
-                operation_store.remove(operation_id).await;
                 info!(operation_id = ?operation_id, "Payment operation completed successfully");
             }
 
             for operation_id in &timed_out_operations {
-                operation_store.remove(operation_id).await;
+                if let Some(mut operation) = operation_store.get(operation_id).await {
+                    operation.status = OperationStatus::TimedOut;
+                    operation.last_error = Some("Operation timed out".to_string());
+                    operation.updated_at = Utc::now();
+                    let _ = operation_store.upsert(operation).await;
+                }
                 warn!(operation_id = ?operation_id, "Payment operation timed out");
             }
         }

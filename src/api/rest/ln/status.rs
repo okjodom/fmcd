@@ -29,13 +29,15 @@ pub struct StatusResponse {
     pub operation_id: OperationId,
     pub status: InvoiceStatus,
     pub settlement: Option<SettlementInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracked_status: Option<String>,
     pub last_updated: chrono::DateTime<Utc>,
 }
 
 /// Unified status endpoint that supports both invoice_id and operation_id
 /// lookup
 #[instrument(
-    skip(client),
+    skip(state, client),
     fields(
         operation_id = ?operation_id,
         federation_id = %query.federation_id,
@@ -43,6 +45,7 @@ pub struct StatusResponse {
     )
 )]
 async fn _get_status(
+    state: &AppState,
     client: ClientHandleArc,
     operation_id: OperationId,
     query: StatusQuery,
@@ -93,7 +96,11 @@ async fn _get_status(
         }
     };
 
-    let last_updated = Utc::now();
+    let tracked_operation = state.core.get_tracked_operation(&operation_id).await;
+    let last_updated = tracked_operation
+        .as_ref()
+        .map(|operation| operation.updated_at)
+        .unwrap_or_else(Utc::now);
     let (status, settlement) = match current_state {
         LnReceiveState::Created => (InvoiceStatus::Created, None),
         LnReceiveState::WaitingForPayment { .. } => (InvoiceStatus::Pending, None),
@@ -116,7 +123,7 @@ async fn _get_status(
                 },
                 settled_at: last_updated, // Using current time as approximation
                 preimage: None,           // Not exposed in current API
-                gateway_fee_msat: None,   // Not exposed in current API
+                gateway_fee_msat: tracked_operation.as_ref().and_then(|op| op.fee_msat),
             };
             (
                 InvoiceStatus::Claimed {
@@ -153,6 +160,7 @@ async fn _get_status(
         operation_id,
         status,
         settlement,
+        tracked_status: tracked_operation.map(|operation| format!("{:?}", operation.status)),
         last_updated,
     })
 }
@@ -171,7 +179,7 @@ pub async fn handle_ws(state: AppState, v: Value) -> Result<Value, AppError> {
     let query = StatusQuery {
         federation_id: req.federation_id,
     };
-    let status = _get_status(client, req.operation_id, query).await?;
+    let status = _get_status(&state, client, req.operation_id, query).await?;
     Ok(json!(status))
 }
 
@@ -190,7 +198,7 @@ pub async fn handle_rest_by_operation_id(
     })?;
 
     let client = state.get_client(query.federation_id).await?;
-    let status = _get_status(client, operation_id, query).await?;
+    let status = _get_status(&state, client, operation_id, query).await?;
     Ok(Json(status))
 }
 
@@ -247,7 +255,7 @@ pub async fn handle_bulk_status(
             federation_id: req.federation_id,
         };
 
-        match _get_status(client.clone(), operation_id, query).await {
+        match _get_status(&state, client.clone(), operation_id, query).await {
             Ok(status_response) => {
                 statuses.push(BulkStatusItem {
                     operation_id,

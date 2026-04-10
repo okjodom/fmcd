@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -26,13 +27,17 @@ pub enum OperationStatus {
     Succeeded,
     Failed,
     Refunded,
+    TimedOut,
 }
 
 impl OperationStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            OperationStatus::Succeeded | OperationStatus::Failed | OperationStatus::Refunded
+            OperationStatus::Succeeded
+                | OperationStatus::Failed
+                | OperationStatus::Refunded
+                | OperationStatus::TimedOut
         )
     }
 }
@@ -68,14 +73,17 @@ pub struct OperationStoreStats {
 #[derive(Debug, Clone)]
 pub struct OperationStore {
     max_operations_per_federation: usize,
+    storage_path: PathBuf,
     operations: Arc<RwLock<HashMap<OperationId, PaymentOperation>>>,
 }
 
 impl OperationStore {
-    pub fn new(max_operations_per_federation: usize) -> Self {
+    pub fn new(max_operations_per_federation: usize, storage_path: PathBuf) -> Self {
+        let operations = Self::load_from_disk(&storage_path).unwrap_or_default();
         Self {
             max_operations_per_federation,
-            operations: Arc::new(RwLock::new(HashMap::new())),
+            storage_path,
+            operations: Arc::new(RwLock::new(operations)),
         }
     }
 
@@ -83,6 +91,7 @@ impl OperationStore {
         let mut operations = self.operations.write().await;
         let federation_count = operations
             .values()
+            .filter(|op| !op.status.is_terminal())
             .filter(|op| op.federation_id == operation.federation_id)
             .count();
 
@@ -97,6 +106,7 @@ impl OperationStore {
         }
 
         operations.insert(operation.operation_id, operation);
+        self.persist_locked(&operations)?;
         Ok(())
     }
 
@@ -104,15 +114,52 @@ impl OperationStore {
         self.operations.read().await.clone()
     }
 
-    pub async fn upsert(&self, operation: PaymentOperation) {
+    pub async fn active_snapshot(&self) -> HashMap<OperationId, PaymentOperation> {
         self.operations
-            .write()
+            .read()
             .await
-            .insert(operation.operation_id, operation);
+            .iter()
+            .filter(|(_, operation)| !operation.status.is_terminal())
+            .map(|(operation_id, operation)| (*operation_id, operation.clone()))
+            .collect()
+    }
+
+    pub async fn get(&self, operation_id: &OperationId) -> Option<PaymentOperation> {
+        self.operations.read().await.get(operation_id).cloned()
+    }
+
+    pub async fn list_by_federation(
+        &self,
+        federation_id: FederationId,
+        limit: usize,
+    ) -> Vec<PaymentOperation> {
+        let mut operations = self
+            .operations
+            .read()
+            .await
+            .values()
+            .filter(|op| op.federation_id == federation_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        operations.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        operations.truncate(limit);
+        operations
+    }
+
+    pub async fn upsert(&self, operation: PaymentOperation) -> Result<()> {
+        let mut operations = self.operations.write().await;
+        operations.insert(operation.operation_id, operation);
+        self.persist_locked(&operations)?;
+        Ok(())
     }
 
     pub async fn remove(&self, operation_id: &OperationId) -> Option<PaymentOperation> {
-        self.operations.write().await.remove(operation_id)
+        let mut operations = self.operations.write().await;
+        let removed = operations.remove(operation_id);
+        if removed.is_some() {
+            let _ = self.persist_locked(&operations);
+        }
+        removed
     }
 
     pub async fn remove_many(&self, operation_ids: &[OperationId]) {
@@ -127,7 +174,10 @@ impl OperationStore {
         let mut by_type: HashMap<PaymentType, usize> = HashMap::new();
         let mut by_federation: HashMap<FederationId, usize> = HashMap::new();
 
-        for operation in operations.values() {
+        for operation in operations
+            .values()
+            .filter(|operation| !operation.status.is_terminal())
+        {
             *by_type.entry(operation.payment_type.clone()).or_insert(0) += 1;
             *by_federation.entry(operation.federation_id).or_insert(0) += 1;
         }
@@ -137,5 +187,29 @@ impl OperationStore {
             operations_by_type: by_type,
             operations_by_federation: by_federation,
         }
+    }
+
+    fn load_from_disk(path: &PathBuf) -> Result<HashMap<OperationId, PaymentOperation>> {
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let contents = std::fs::read_to_string(path)?;
+        if contents.trim().is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        serde_json::from_str(&contents)
+            .map_err(|e| anyhow!("Failed to deserialize operation store at {:?}: {}", path, e))
+    }
+
+    fn persist_locked(&self, operations: &HashMap<OperationId, PaymentOperation>) -> Result<()> {
+        if let Some(parent) = self.storage_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let contents = serde_json::to_string_pretty(operations)?;
+        std::fs::write(&self.storage_path, contents)?;
+        Ok(())
     }
 }

@@ -203,7 +203,7 @@ impl FmcdCore {
     }
 
     pub async fn new_with_config(data_dir: PathBuf, webhook_config: WebhookConfig) -> Result<Self> {
-        let multimint = MultiMint::new(data_dir).await?;
+        let multimint = MultiMint::new(data_dir.clone()).await?;
         multimint.update_gateway_caches().await?;
         let multimint = Arc::new(multimint);
 
@@ -254,6 +254,7 @@ impl FmcdCore {
         let payment_lifecycle_manager = Arc::new(PaymentLifecycleManager::new(
             event_bus.clone(),
             multimint.clone(),
+            data_dir.clone(),
             PaymentLifecycleConfig::default(),
         ));
 
@@ -353,6 +354,27 @@ impl FmcdCore {
         self.client_lifecycle_service
             .backup_to_federation(federation_id, metadata)
             .await
+    }
+
+    pub async fn get_tracked_operation(
+        &self,
+        operation_id: &OperationId,
+    ) -> Option<crate::core::operations::PaymentOperation> {
+        match &self.payment_lifecycle_manager {
+            Some(manager) => manager.get_operation(operation_id).await,
+            None => None,
+        }
+    }
+
+    pub async fn list_tracked_operations(
+        &self,
+        federation_id: FederationId,
+        limit: usize,
+    ) -> Vec<crate::core::operations::PaymentOperation> {
+        match &self.payment_lifecycle_manager {
+            Some(manager) => manager.list_operations(federation_id, limit).await,
+            None => Vec::new(),
+        }
     }
 
     /// Get wallet info for all federations
