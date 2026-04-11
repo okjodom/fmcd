@@ -190,13 +190,14 @@ async fn start_main_server(config: &Config, mode: Mode, state: AppState) -> anyh
     // Create authentication instances
     let basic_auth = Arc::new(BasicAuth::new(config.http_password.clone()));
     let ws_auth = Arc::new(WebSocketAuth::new(config.http_password.clone()));
+    let health_state = Arc::new(state.clone());
 
     // Create the router based on mode
     let app = match mode {
         Mode::Rest => {
             let router = Router::new()
                 .nest("/v2", fedimint_v2_rest())
-                .with_state(state);
+                .with_state(state.clone());
 
             // Apply authentication middleware if enabled
             if basic_auth.is_enabled() {
@@ -235,6 +236,7 @@ async fn start_main_server(config: &Config, mode: Mode, state: AppState) -> anyh
         )))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        .layer(axum::Extension(health_state))
         .route("/health", get(health_check))
         .route("/health/live", get(liveness_check))
         .route("/health/ready", get(readiness_check))
