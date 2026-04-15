@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::anyhow;
+use async_stream::stream;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -46,6 +47,7 @@ pub struct StreamQuery {
 /// Create a unified invoice status stream using fedimint's native
 /// subscribe_ln_receive
 async fn create_unified_invoice_stream(
+    state: AppState,
     client: ClientHandleArc,
     operation_id: OperationId,
     tracked_operation: Option<PaymentOperation>,
@@ -94,40 +96,99 @@ async fn create_unified_invoice_stream(
     });
 
     if tracked_protocol == Some("lnv2") || tracked_is_terminal {
-        let tracked_stream = stream::once(async move {
+        let poll_interval = Duration::from_secs(2);
+        let tracked_stream = stream! {
+            let mut last_payload: String;
+
             match tracked_operation {
                 Some(operation) => {
-                    let update = tracked_operation_to_status_update(
+                    match serde_json::to_string(&tracked_operation_to_status_update(
                         operation,
                         operation_id,
                         invoice_amount_msat,
-                    );
-
-                    match serde_json::to_string(&update) {
-                        Ok(json_data) => Ok::<_, Infallible>(
-                            Event::default().event("invoice_update").data(json_data),
-                        ),
+                    )) {
+                        Ok(json_data) => {
+                            last_payload = json_data.clone();
+                            yield Ok::<_, Infallible>(
+                                Event::default().event("invoice_update").data(json_data),
+                            );
+                        }
                         Err(e) => {
                             error!(
                                 operation_id = ?operation_id,
                                 error = ?e,
-                                "Failed to serialize tracked invoice update"
+                                "Failed to serialize initial tracked invoice update"
                             );
-                            Ok::<_, Infallible>(
+                            yield Ok::<_, Infallible>(
                                 Event::default()
                                     .event("error")
                                     .data(format!("Serialization error: {}", e)),
-                            )
+                            );
+                            return;
                         }
                     }
                 }
-                None => Ok::<_, Infallible>(
-                    Event::default()
-                        .event("error")
-                        .data("Tracked operation not found"),
-                ),
+                None => {
+                    yield Ok::<_, Infallible>(
+                        Event::default()
+                            .event("error")
+                            .data("Tracked operation not found"),
+                    );
+                    return;
+                }
             }
-        });
+
+            let mut poller = tokio::time::interval(poll_interval);
+
+            loop {
+                poller.tick().await;
+
+                let Some(operation) = state.core.get_tracked_operation(&operation_id).await else {
+                    yield Ok::<_, Infallible>(
+                        Event::default()
+                            .event("error")
+                            .data("Tracked operation not found"),
+                    );
+                    return;
+                };
+
+                let is_terminal = operation.status.is_terminal();
+                let update = tracked_operation_to_status_update(
+                    operation,
+                    operation_id,
+                    invoice_amount_msat,
+                );
+
+                match serde_json::to_string(&update) {
+                    Ok(json_data) => {
+                        let changed = last_payload != json_data;
+                        if changed {
+                            last_payload = json_data.clone();
+                            yield Ok::<_, Infallible>(
+                                Event::default().event("invoice_update").data(json_data),
+                            );
+                        }
+
+                        if is_terminal {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            operation_id = ?operation_id,
+                            error = ?e,
+                            "Failed to serialize tracked invoice update"
+                        );
+                        yield Ok::<_, Infallible>(
+                            Event::default()
+                                .event("error")
+                                .data(format!("Serialization error: {}", e)),
+                        );
+                        return;
+                    }
+                }
+            }
+        };
 
         return Box::pin(stream::select_all(vec![
             heartbeat_stream.boxed(),
@@ -350,6 +411,7 @@ pub async fn handle_operation_stream(
     );
 
     let stream = create_unified_invoice_stream(
+        state,
         client,
         operation_id,
         tracked_operation,
