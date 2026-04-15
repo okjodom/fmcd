@@ -62,7 +62,7 @@ impl LightningService {
         &self,
         client: &ClientHandleArc,
         federation_id: FederationId,
-        gateway_id: PublicKey,
+        gateway_id: Option<PublicKey>,
         amount_msat: Amount,
         description: &str,
         expiry_time: Option<u64>,
@@ -98,12 +98,18 @@ impl LightningService {
         &self,
         client: &ClientHandleArc,
         federation_id: FederationId,
-        gateway_id: PublicKey,
+        gateway_id: Option<PublicKey>,
         amount_msat: Amount,
         description: &str,
         expiry_time: Option<u64>,
         metadata: Value,
     ) -> Result<LightningInvoiceResult, AppError> {
+        let gateway_id = gateway_id.ok_or_else(|| {
+            AppError::validation_error(
+                "gateway_id is required for legacy lightning federations without lnv2 support",
+            )
+        })?;
+
         let lightning_module = client
             .get_first_module::<LightningClientModule>()
             .map_err(|e| {
@@ -182,17 +188,18 @@ impl LightningService {
         &self,
         lightning_module: &LightningClientModuleV2,
         federation_id: FederationId,
-        gateway_id: PublicKey,
+        gateway_id: Option<PublicKey>,
         amount_msat: Amount,
         description: &str,
         expiry_time: Option<u64>,
         metadata: Value,
     ) -> Result<LightningInvoiceResult, AppError> {
-        let _ = gateway_id;
-        warn!(
-            federation_id = %federation_id,
-            "Ignoring legacy gateway_id selection for lnv2 invoice creation"
-        );
+        if gateway_id.is_some() {
+            warn!(
+                federation_id = %federation_id,
+                "Ignoring legacy gateway_id selection for lnv2 invoice creation"
+            );
+        }
 
         let expiry_secs = expiry_time.unwrap_or(3600).min(u64::from(u32::MAX)) as u32;
         let (invoice, operation_id) = lightning_module
@@ -228,7 +235,7 @@ impl LightningService {
         &self,
         client: &ClientHandleArc,
         federation_id: FederationId,
-        gateway_id: PublicKey,
+        gateway_id: Option<PublicKey>,
         bolt11: Bolt11Invoice,
         amount_msat: Option<Amount>,
     ) -> Result<LightningPayResult, AppError> {
@@ -253,10 +260,16 @@ impl LightningService {
         &self,
         client: &ClientHandleArc,
         federation_id: FederationId,
-        gateway_id: PublicKey,
+        gateway_id: Option<PublicKey>,
         bolt11: Bolt11Invoice,
         amount_msat: Option<Amount>,
     ) -> Result<LightningPayResult, AppError> {
+        let gateway_id = gateway_id.ok_or_else(|| {
+            AppError::validation_error(
+                "gateway_id is required for legacy lightning federations without lnv2 support",
+            )
+        })?;
+
         let lightning_module = client
             .get_first_module::<LightningClientModule>()
             .map_err(|e| {
@@ -317,15 +330,16 @@ impl LightningService {
         client: &ClientHandleArc,
         lightning_module: &LightningClientModuleV2,
         federation_id: FederationId,
-        gateway_id: PublicKey,
+        gateway_id: Option<PublicKey>,
         bolt11: Bolt11Invoice,
         _amount_msat: Option<Amount>,
     ) -> Result<LightningPayResult, AppError> {
-        let _ = gateway_id;
-        warn!(
-            federation_id = %federation_id,
-            "Ignoring legacy gateway_id selection for lnv2 payments"
-        );
+        if gateway_id.is_some() {
+            warn!(
+                federation_id = %federation_id,
+                "Ignoring legacy gateway_id selection for lnv2 payments"
+            );
+        }
 
         let operation_id = lightning_module
             .send(bolt11, Option::<SafeUrl>::None, Value::Null)

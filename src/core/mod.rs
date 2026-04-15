@@ -86,7 +86,8 @@ pub struct LnInvoiceRequest {
     pub amount_msat: Amount,
     pub description: String,
     pub expiry_time: Option<u64>,
-    pub gateway_id: PublicKey,
+    #[serde(default)]
+    pub gateway_id: Option<PublicKey>,
     pub federation_id: FederationId,
     pub metadata: Option<serde_json::Value>,
 }
@@ -98,7 +99,8 @@ pub struct LnPayRequest {
     pub payment_info: String,
     pub amount_msat: Option<Amount>,
     pub lnurl_comment: Option<String>,
-    pub gateway_id: PublicKey,
+    #[serde(default)]
+    pub gateway_id: Option<PublicKey>,
     pub federation_id: FederationId,
 }
 
@@ -460,7 +462,7 @@ impl FmcdCore {
         let client = self.get_client(req.federation_id).await?;
 
         info!(
-            gateway_id = %req.gateway_id,
+            gateway_id = req.gateway_id.map(|gateway| gateway.to_string()).unwrap_or_else(|| "auto".to_string()),
             federation_id = %req.federation_id,
             amount_msat = %req.amount_msat.msats,
             "Creating invoice with automatic monitoring"
