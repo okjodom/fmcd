@@ -9,10 +9,15 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
-use fedimint_client::ClientHandleArc;
+use fedimint_client::{ClientHandleArc, ClientModule};
 use fedimint_core::config::FederationId;
 use fedimint_core::core::OperationId;
-use fedimint_ln_client::{LightningClientModule, LnReceiveState};
+use fedimint_ln_client::{
+    LightningClientModule, LightningOperationMeta as LightningOperationMetaV1,
+    LightningOperationMetaVariant, LnReceiveState,
+};
+use fedimint_lnv2_client::LightningOperationMeta as LightningOperationMetaV2;
+use fedimint_lnv2_common::LightningInvoice;
 use futures_util::stream::Stream;
 use serde::Deserialize;
 use tokio_stream::wrappers::IntervalStream;
@@ -44,6 +49,46 @@ pub struct StreamQuery {
     pub timeout_seconds: Option<u64>,
 }
 
+fn invoice_amount_from_v1_meta(meta: LightningOperationMetaV1) -> Option<u64> {
+    match meta.variant {
+        LightningOperationMetaVariant::Receive { invoice, .. } => invoice.amount_milli_satoshis(),
+        LightningOperationMetaVariant::Pay(pay) => pay.invoice.amount_milli_satoshis(),
+        _ => None,
+    }
+}
+
+fn invoice_amount_from_v2_invoice(invoice: LightningInvoice) -> Option<u64> {
+    match invoice {
+        LightningInvoice::Bolt11(invoice) => invoice.amount_milli_satoshis(),
+    }
+}
+
+async fn operation_invoice_amount_msat(client: &ClientHandleArc, operation_id: OperationId) -> u64 {
+    client
+        .operation_log()
+        .get_operation(operation_id)
+        .await
+        .and_then(|op| match op.operation_module_kind() {
+            kind if kind == LightningClientModule::kind().as_str() => {
+                invoice_amount_from_v1_meta(op.meta::<LightningOperationMetaV1>())
+            }
+            "lnv2" => match op.meta::<LightningOperationMetaV2>() {
+                LightningOperationMetaV2::Receive(meta) => {
+                    invoice_amount_from_v2_invoice(meta.invoice)
+                }
+                LightningOperationMetaV2::Send(meta) => {
+                    invoice_amount_from_v2_invoice(meta.invoice)
+                }
+                LightningOperationMetaV2::LnurlReceive(_) => None,
+            },
+            _ => op
+                .meta::<serde_json::Value>()
+                .get("amount")
+                .and_then(|value| value.as_u64()),
+        })
+        .unwrap_or(0)
+}
+
 /// Create a unified invoice status stream using fedimint's native
 /// subscribe_ln_receive
 async fn create_unified_invoice_stream(
@@ -56,17 +101,7 @@ async fn create_unified_invoice_stream(
 ) -> Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> {
     use futures_util::stream::{self, StreamExt};
 
-    let invoice_amount_msat = client
-        .operation_log()
-        .get_operation(operation_id)
-        .await
-        .and_then(|op| {
-            // Extract amount from operation metadata if available
-            op.meta::<serde_json::Value>()
-                .get("amount")
-                .and_then(|v| v.as_u64())
-        })
-        .unwrap_or(0); // Default to 0 if not found
+    let invoice_amount_msat = operation_invoice_amount_msat(&client, operation_id).await;
 
     let tracked_protocol = tracked_operation
         .as_ref()
