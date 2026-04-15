@@ -2030,6 +2030,7 @@ dependencies = [
  "fedimint-ln-client",
  "fedimint-ln-common",
  "fedimint-lnv2-client",
+ "fedimint-lnv2-common",
  "fedimint-mint-client",
  "fedimint-rocksdb",
  "fedimint-wallet-client",

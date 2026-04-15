@@ -15,7 +15,7 @@ use fedimint_core::core::OperationId;
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::secp256k1::PublicKey;
 use fedimint_core::{Amount, BitcoinAmountOrAll, TieredCounts};
-use fedimint_ln_client::{LightningClientModule, OutgoingLightningPayment, PayType};
+use fedimint_ln_client::{LightningClientModule, PayType};
 use fedimint_mint_client::MintClientModule;
 use fedimint_wallet_client::client_db::TweakIdx;
 use fedimint_wallet_client::{WalletClientModule, WithdrawState};
@@ -30,7 +30,7 @@ use self::services::{
     BalanceMonitor, BalanceMonitorConfig, ClientLifecycleService, DepositMonitor,
     DepositMonitorConfig, LightningService, PaymentLifecycleConfig, PaymentLifecycleManager,
 };
-use crate::error::{AppError, ErrorCategory};
+use crate::error::AppError;
 use crate::events::handlers::{LoggingEventHandler, MetricsEventHandler};
 use crate::events::EventBus;
 use crate::observability::correlation::RequestContext;
@@ -111,6 +111,8 @@ pub struct LnPayResponse {
     pub contract_id: String,
     pub fee: Amount,
     pub preimage: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
 }
 
 /// Invoice response with essential information
@@ -126,6 +128,8 @@ pub struct LnInvoiceResponse {
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
 }
 
 /// Unified invoice status enum
@@ -470,7 +474,7 @@ impl FmcdCore {
         // Use provided metadata or default to null
         let metadata = req.metadata.clone().unwrap_or(serde_json::Value::Null);
 
-        let (operation_id, invoice) = self
+        let invoice_result = self
             .lightning_service
             .create_invoice(
                 &client,
@@ -482,6 +486,9 @@ impl FmcdCore {
                 metadata,
             )
             .await?;
+        let operation_id = invoice_result.operation_id;
+        let invoice = invoice_result.invoice;
+        let protocol = invoice_result.protocol;
 
         // Generate unique invoice ID for tracking
         let invoice_id = format!("inv_{}", Uuid::new_v4().simple());
@@ -508,6 +515,7 @@ impl FmcdCore {
             created_at,
             expires_at,
             metadata: req.metadata.clone(),
+            protocol: Some(protocol.as_str().to_string()),
         };
 
         // Register with payment lifecycle manager for comprehensive tracking
@@ -517,7 +525,11 @@ impl FmcdCore {
                     operation_id,
                     req.federation_id,
                     req.amount_msat,
-                    tracked_lightning_metadata("lnv1", "ln_receive", req.metadata.clone()),
+                    tracked_lightning_metadata(
+                        protocol.as_str(),
+                        "ln_receive",
+                        req.metadata.clone(),
+                    ),
                     Some(context.correlation_id.clone()),
                 )
                 .await
@@ -537,15 +549,16 @@ impl FmcdCore {
             }
         }
 
-        // Start automatic monitoring for the invoice
-        self.start_invoice_monitoring(
-            client,
-            operation_id,
-            invoice_id.clone(),
-            req.amount_msat.msats,
-            invoice_tracker,
-        )
-        .await;
+        if protocol == crate::core::services::lightning::LightningProtocol::Lnv1 {
+            self.start_invoice_monitoring(
+                client,
+                operation_id,
+                invoice_id.clone(),
+                req.amount_msat.msats,
+                invoice_tracker,
+            )
+            .await;
+        }
 
         info!(
             operation_id = ?operation_id,
@@ -987,11 +1000,7 @@ impl FmcdCore {
             .amount_msat
             .unwrap_or_else(|| Amount::from_msats(bolt11.amount_milli_satoshis().unwrap_or(0)));
 
-        let OutgoingLightningPayment {
-            payment_type,
-            contract_id,
-            fee,
-        } = self
+        let payment_result = self
             .lightning_service
             .pay_invoice(
                 &client,
@@ -1009,25 +1018,8 @@ impl FmcdCore {
                 )
                     .with_context(context.clone())
             })?;
-
-        let lightning_module = client
-            .get_first_module::<LightningClientModule>()
-            .map_err(|e| {
-                let error_msg = "Lightning module not available".to_string();
-                error!(
-                    error = ?e,
-                    payment_id = %payment_tracker.payment_id(),
-                    "Lightning module not available"
-                );
-                AppError::with_category(ErrorCategory::PaymentTimeout, error_msg)
-                    .with_context(context.clone())
-            })?;
-
-        // Extract the operation_id from the payment_type
-        let operation_id = match &payment_type {
-            PayType::Internal(op_id) => *op_id,
-            PayType::Lightning(op_id) => *op_id,
-        };
+        let operation_id = payment_result.operation_id;
+        let protocol = payment_result.protocol;
 
         if let Some(ref payment_lifecycle_manager) = self.payment_lifecycle_manager {
             if let Err(e) = payment_lifecycle_manager
@@ -1035,8 +1027,8 @@ impl FmcdCore {
                     operation_id,
                     req.federation_id,
                     tracked_amount,
-                    Some(fee.msats),
-                    tracked_lightning_metadata("lnv1", "ln_pay", None),
+                    Some(payment_result.fee.msats),
+                    tracked_lightning_metadata(protocol.as_str(), "ln_pay", None),
                     Some(context.correlation_id.clone()),
                 )
                 .await
@@ -1049,99 +1041,14 @@ impl FmcdCore {
             }
         }
 
-        // Wait for payment completion - inline the logic from wait_for_ln_payment
-        use fedimint_ln_client::{InternalPayState, LnPayState};
-        use futures_util::StreamExt;
-
-        let preimage = match payment_type {
-            PayType::Internal(op_id) => {
-                let mut updates = lightning_module
-                    .subscribe_internal_pay(op_id)
-                    .await
-                    .map_err(|e| {
-                        let error_msg = format!("Failed to subscribe to payment: {}", e);
-                        error!(error = ?e, payment_id = %payment_tracker.payment_id(), "Subscribe failed");
-                        // Note: Can't update tracker in non-async error closure
-                        AppError::validation_error(error_msg).with_context(context.clone())
-                    })?
-                    .into_stream();
-
-                let mut payment_preimage = None;
-                while let Some(update) = updates.next().await {
-                    match update {
-                        InternalPayState::Preimage(preimage) => {
-                            payment_preimage = Some(hex::encode(preimage.0));
-                            break;
-                        }
-                        InternalPayState::RefundSuccess {
-                            out_points: _,
-                            error,
-                        } => {
-                            let error_msg =
-                                format!("Internal payment failed with refund. Error: {}", error);
-                            error!(payment_id = %payment_tracker.payment_id(), "Payment refunded");
-                            // Note: Can't update tracker in non-async error closure
-                            return Err(AppError::validation_error(error_msg).with_context(context));
-                        }
-                        InternalPayState::UnexpectedError(e) => {
-                            let error_msg = format!("Unexpected payment error: {}", e);
-                            error!(payment_id = %payment_tracker.payment_id(), "Unexpected error");
-                            // Note: Can't update tracker in non-async error closure
-                            return Err(AppError::validation_error(error_msg).with_context(context));
-                        }
-                        _ => continue,
-                    }
-                }
-                payment_preimage
-            }
-            PayType::Lightning(op_id) => {
-                let mut updates = lightning_module
-                    .subscribe_ln_pay(op_id)
-                    .await
-                    .map_err(|e| {
-                        let error_msg = format!("Failed to subscribe to payment: {}", e);
-                        error!(error = ?e, payment_id = %payment_tracker.payment_id(), "Subscribe failed");
-                        // Note: Can't update tracker in non-async error closure
-                        AppError::validation_error(error_msg).with_context(context.clone())
-                    })?
-                    .into_stream();
-
-                let mut payment_preimage = None;
-                while let Some(update) = updates.next().await {
-                    match update {
-                        LnPayState::Success { preimage } => {
-                            payment_preimage = Some(hex::encode(preimage));
-                            break;
-                        }
-                        LnPayState::Refunded { gateway_error } => {
-                            let error_msg = format!("Payment refunded: {}", gateway_error);
-                            error!(payment_id = %payment_tracker.payment_id(), "Payment refunded");
-                            // Note: Can't update tracker in non-async error closure
-                            return Err(AppError::validation_error(error_msg).with_context(context));
-                        }
-                        _ => continue,
-                    }
-                }
-                payment_preimage
-            }
-        };
-
-        let preimage = preimage.ok_or_else(|| {
-            let error_msg = "Payment completed but no preimage returned".to_string();
-            error!(
-                payment_id = %payment_tracker.payment_id(),
-                "Payment completed but no preimage returned"
-            );
-            // Note: Can't update tracker in non-async error closure
-            AppError::validation_error(error_msg).with_context(context.clone())
-        })?;
+        let preimage = payment_result.preimage.clone();
 
         // Track successful payment
         payment_tracker
             .succeed(
                 preimage.clone(),
                 req.amount_msat.map(|a| a.msats).unwrap_or(0),
-                fee.msats,
+                payment_result.fee.msats,
             )
             .await;
 
@@ -1153,10 +1060,11 @@ impl FmcdCore {
 
         Ok(LnPayResponse {
             operation_id,
-            payment_type,
-            contract_id: contract_id.to_string(),
-            fee,
+            payment_type: payment_result.payment_type,
+            contract_id: payment_result.contract_id,
+            fee: payment_result.fee,
             preimage,
+            protocol: Some(protocol.as_str().to_string()),
         })
     }
 

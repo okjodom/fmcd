@@ -36,6 +36,7 @@ pub async fn wait_for_ln_payment(
                             contract_id,
                             fee: Amount::ZERO,
                             preimage: hex::encode(preimage.0),
+                            protocol: Some("lnv1".to_string()),
                         }));
                     }
                     InternalPayState::RefundSuccess { out_points, error } => {
@@ -77,6 +78,7 @@ pub async fn wait_for_ln_payment(
                             contract_id,
                             fee: Amount::ZERO,
                             preimage,
+                            protocol: Some("lnv1".to_string()),
                         }));
                     }
                     LnPayState::Refunded { gateway_error } => {

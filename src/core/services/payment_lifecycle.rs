@@ -2,13 +2,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use fedimint_client::ClientHandleArc;
 use fedimint_core::config::FederationId;
 use fedimint_core::core::OperationId;
 use fedimint_core::Amount;
 use fedimint_ln_client::{LightningClientModule, LnPayState, LnReceiveState};
+use fedimint_lnv2_client::{
+    LightningClientModule as LightningClientModuleV2, LightningOperationMeta,
+    ReceiveOperationState, SendOperationState,
+};
+use fedimint_lnv2_common::LightningInvoice;
 use fedimint_wallet_client::{DepositStateV2, WalletClientModule, WithdrawState};
 use futures_util::StreamExt;
 use tokio::sync::{broadcast, Mutex};
@@ -74,6 +79,29 @@ fn infer_payment_type(operation_kind: &str, meta: &serde_json::Value) -> Option<
             }
         }
         _ => None,
+    }
+}
+
+fn lnv2_invoice_amount_msat(invoice: &LightningInvoice) -> Option<Amount> {
+    match invoice {
+        LightningInvoice::Bolt11(invoice) => {
+            invoice.amount_milli_satoshis().map(Amount::from_msats)
+        }
+    }
+}
+
+fn lnv2_payment_details(meta: &serde_json::Value) -> Option<(Option<Amount>, Option<u64>)> {
+    let meta: LightningOperationMeta = serde_json::from_value(meta.clone()).ok()?;
+    match meta {
+        LightningOperationMeta::Send(meta) => Some((
+            lnv2_invoice_amount_msat(&meta.invoice),
+            Some(meta.gateway_fee().msats),
+        )),
+        LightningOperationMeta::Receive(meta) => Some((
+            lnv2_invoice_amount_msat(&meta.invoice),
+            Some(meta.gateway_fee().msats),
+        )),
+        LightningOperationMeta::LnurlReceive(_) => Some((None, None)),
     }
 }
 
@@ -458,6 +486,17 @@ impl PaymentLifecycleManager {
             }
 
             if let Some(payment_type) = payment_type {
+                let (amount_msat, fee_msat) = if operation_kind == "lnv2" {
+                    lnv2_payment_details(&meta).unwrap_or((None, None))
+                } else {
+                    (
+                        meta.get("amount_msat")
+                            .and_then(|v| v.as_u64())
+                            .map(Amount::from_msats),
+                        meta.get("fee_msat").and_then(|v| v.as_u64()),
+                    )
+                };
+
                 let operation = PaymentOperation {
                     operation_id,
                     federation_id,
@@ -467,19 +506,12 @@ impl PaymentLifecycleManager {
                         "lnv2" => Some("lnv2".to_string()),
                         _ => None,
                     },
-                    amount_msat: value
-                        .meta::<serde_json::Value>()
-                        .get("amount_msat")
-                        .and_then(|v| v.as_u64())
-                        .map(Amount::from_msats),
-                    fee_msat: value
-                        .meta::<serde_json::Value>()
-                        .get("fee_msat")
-                        .and_then(|v| v.as_u64()),
+                    amount_msat,
+                    fee_msat,
                     status: OperationStatus::Pending,
                     created_at,
                     updated_at: created_at,
-                    metadata: Some(value.meta()),
+                    metadata: Some(meta.clone()),
                     last_error: None,
                     correlation_id: None,
                     claim_attempted: false,
@@ -676,6 +708,67 @@ impl PaymentLifecycleManager {
         event_bus: &Arc<EventBus>,
         _claim_timeout: Duration,
     ) -> Result<()> {
+        if operation.protocol.as_deref() == Some("lnv2") {
+            let lightning_module = client.get_first_module::<LightningClientModuleV2>()?;
+            let operation_log = client
+                .operation_log()
+                .get_operation(operation.operation_id)
+                .await
+                .ok_or_else(|| anyhow!("Missing lnv2 receive operation metadata"))?;
+            let meta = operation_log.meta::<LightningOperationMeta>();
+            if let LightningOperationMeta::Receive(receive_meta) = meta {
+                operation.amount_msat = lnv2_invoice_amount_msat(&receive_meta.invoice);
+                operation.fee_msat = Some(receive_meta.gateway_fee().msats);
+            }
+
+            let mut updates = lightning_module
+                .subscribe_receive_operation_state_updates(operation.operation_id)
+                .await?
+                .into_stream();
+
+            let current_state = match updates.next().await {
+                Some(state) => state,
+                None => return Ok(()),
+            };
+
+            match current_state {
+                ReceiveOperationState::Claimed => {
+                    if !operation.ecash_claimed {
+                        operation.ecash_claimed = true;
+                        operation.claim_attempted = true;
+                        operation.status = OperationStatus::Succeeded;
+                        operation.updated_at = Utc::now();
+
+                        if let Some(amount) = operation.amount_msat {
+                            let event = FmcdEvent::InvoicePaid {
+                                operation_id: format!("{:?}", operation.operation_id),
+                                federation_id: operation.federation_id.to_string(),
+                                amount_msat: amount.msats,
+                                correlation_id: operation.correlation_id.clone(),
+                                timestamp: Utc::now(),
+                            };
+                            let _ = event_bus.publish(event).await;
+                        }
+                    }
+                }
+                ReceiveOperationState::Expired => {
+                    operation.claim_attempted = true;
+                    operation.status = OperationStatus::TimedOut;
+                    operation.last_error = Some("Invoice expired".to_string());
+                    operation.updated_at = Utc::now();
+                }
+                ReceiveOperationState::Failure => {
+                    operation.claim_attempted = true;
+                    operation.status = OperationStatus::Failed;
+                    operation.last_error = Some("LNv2 receive failed".to_string());
+                    operation.updated_at = Utc::now();
+                }
+                ReceiveOperationState::Pending | ReceiveOperationState::Claiming => {}
+            }
+
+            return Ok(());
+        }
+
         let lightning_module = client.get_first_module::<LightningClientModule>()?;
 
         // Subscribe to updates for this operation
@@ -795,6 +888,74 @@ impl PaymentLifecycleManager {
         operation: &mut PaymentOperation,
         event_bus: &Arc<EventBus>,
     ) -> Result<()> {
+        if operation.protocol.as_deref() == Some("lnv2") {
+            let lightning_module = client.get_first_module::<LightningClientModuleV2>()?;
+            let operation_log = client
+                .operation_log()
+                .get_operation(operation.operation_id)
+                .await
+                .ok_or_else(|| anyhow!("Missing lnv2 send operation metadata"))?;
+            let meta = operation_log.meta::<LightningOperationMeta>();
+            if let LightningOperationMeta::Send(send_meta) = meta {
+                operation.amount_msat = lnv2_invoice_amount_msat(&send_meta.invoice);
+                operation.fee_msat = Some(send_meta.gateway_fee().msats);
+            }
+
+            let mut updates = lightning_module
+                .subscribe_send_operation_state_updates(operation.operation_id)
+                .await?
+                .into_stream();
+
+            let current_state = match updates.next().await {
+                Some(state) => state,
+                None => return Ok(()),
+            };
+
+            match current_state {
+                SendOperationState::Success(preimage) => {
+                    operation.status = OperationStatus::Succeeded;
+                    operation.updated_at = Utc::now();
+
+                    if let Some(amount) = operation.amount_msat {
+                        let event = FmcdEvent::PaymentSucceeded {
+                            operation_id: format!("{:?}", operation.operation_id),
+                            federation_id: operation.federation_id.to_string(),
+                            amount_msat: amount.msats,
+                            fee_msat: operation.fee_msat,
+                            preimage: hex::encode(preimage),
+                            correlation_id: operation.correlation_id.clone(),
+                            timestamp: Utc::now(),
+                        };
+                        let _ = event_bus.publish(event).await;
+                    }
+                }
+                SendOperationState::Refunded => {
+                    operation.status = OperationStatus::Refunded;
+                    operation.last_error = Some("Payment refunded".to_string());
+                    operation.updated_at = Utc::now();
+
+                    let event = FmcdEvent::PaymentRefunded {
+                        operation_id: format!("{:?}", operation.operation_id),
+                        federation_id: operation.federation_id.to_string(),
+                        reason: "Payment refunded".to_string(),
+                        correlation_id: operation.correlation_id.clone(),
+                        timestamp: Utc::now(),
+                    };
+                    let _ = event_bus.publish(event).await;
+                }
+                SendOperationState::Failure => {
+                    operation.status = OperationStatus::Failed;
+                    operation.last_error = Some("LNv2 payment failed".to_string());
+                    operation.updated_at = Utc::now();
+                }
+                SendOperationState::Funding
+                | SendOperationState::Funded
+                | SendOperationState::Refunding => {}
+            }
+
+            return Ok(());
+        }
+
         let lightning_module = client.get_first_module::<LightningClientModule>()?;
 
         // Check current state
