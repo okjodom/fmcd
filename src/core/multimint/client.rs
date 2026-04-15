@@ -18,6 +18,7 @@ use fedimint_core::db::{
 use fedimint_core::encoding::Encodable;
 use fedimint_derive_secret::{ChildId, DerivableSecret};
 use fedimint_ln_client::LightningClientInit;
+use fedimint_lnv2_client::LightningClientInit as LightningV2ClientInit;
 use fedimint_mint_client::MintClientInit;
 use fedimint_wallet_client::WalletClientInit;
 use futures_util::StreamExt;
@@ -112,6 +113,7 @@ impl LocalClientBuilder {
         client_builder.with_module(WalletClientInit::default());
         client_builder.with_module(MintClientInit);
         client_builder.with_module(LightningClientInit::default());
+        client_builder.with_module(LightningV2ClientInit::default());
         // Primary module is set automatically based on federation config
         Ok(client_builder)
     }

@@ -6,7 +6,9 @@ use chrono::Utc;
 use fedimint_client::backup::Metadata;
 use fedimint_client::ClientHandleArc;
 use fedimint_core::config::{FederationId, FederationIdPrefix};
+use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::invite_code::InviteCode;
+use serde::Serialize;
 use serde_json::Value;
 use tracing::{info, warn};
 
@@ -20,6 +22,30 @@ use crate::observability::correlation::RequestContext;
 pub struct ClientLifecycleService {
     multimint: Arc<MultiMint>,
     event_bus: Arc<EventBus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleCapability {
+    pub instance_id: ModuleInstanceId,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LightningCapabilities {
+    pub lnv1: bool,
+    pub lnv2: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FederationCapabilities {
+    pub federation_id: FederationId,
+    pub modules: Vec<ModuleCapability>,
+    pub lightning: LightningCapabilities,
+    pub mint: bool,
+    pub wallet: bool,
 }
 
 impl ClientLifecycleService {
@@ -173,5 +199,46 @@ impl ClientLifecycleService {
         }
         Ok(serde_json::to_value(config)
             .map_err(|e| anyhow::anyhow!("Client config is serializable: {e}"))?)
+    }
+
+    pub async fn get_capabilities(
+        &self,
+    ) -> Result<HashMap<FederationId, FederationCapabilities>, AppError> {
+        let mut capabilities = HashMap::new();
+
+        for (federation_id, client) in self.multimint.clients.lock().await.iter() {
+            let config = client.config().await;
+            let mut modules = config
+                .modules
+                .iter()
+                .map(|(instance_id, module_config)| ModuleCapability {
+                    instance_id: *instance_id,
+                    kind: module_config.kind().as_str().to_owned(),
+                })
+                .collect::<Vec<_>>();
+            modules.sort_by_key(|module| module.instance_id);
+
+            let has_module = |kind: &str| modules.iter().any(|module| module.kind == kind);
+            let has_lnv1 = has_module("ln");
+            let has_lnv2 = has_module("lnv2");
+            let has_mint = has_module("mint");
+            let has_wallet = has_module("wallet");
+
+            capabilities.insert(
+                *federation_id,
+                FederationCapabilities {
+                    federation_id: *federation_id,
+                    modules,
+                    lightning: LightningCapabilities {
+                        lnv1: has_lnv1,
+                        lnv2: has_lnv2,
+                    },
+                    mint: has_mint,
+                    wallet: has_wallet,
+                },
+            );
+        }
+
+        Ok(capabilities)
     }
 }

@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod capabilities;
 pub mod config;
 pub mod federations;
 pub mod info;

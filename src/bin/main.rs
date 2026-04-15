@@ -285,6 +285,7 @@ async fn track_metrics(req: Request, next: Next) -> impl IntoResponse {
 ///   tracked operation.
 /// - `/v2/admin/module`: Call a module subcommand.
 /// - `/v2/admin/config`: Returns the client config.
+/// - `/v2/admin/capabilities`: Returns normalized module capability flags.
 ///
 /// Mint related commands:
 /// - `/v2/mint/reissue`: Reissue notes received from a third party to avoid
@@ -365,7 +366,8 @@ fn fedimint_v2_rest() -> Router<AppState> {
             get(admin::operations::handle_tracked_rest_by_operation_id),
         )
         .route("/module", post(admin::module::handle_rest))
-        .route("/config", get(admin::config::handle_rest));
+        .route("/config", get(admin::config::handle_rest))
+        .route("/capabilities", get(admin::capabilities::handle_rest));
 
     Router::new()
         .nest("/admin", admin_router)

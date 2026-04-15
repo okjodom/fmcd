@@ -346,6 +346,18 @@ impl FmcdCore {
         self.client_lifecycle_service.get_configs().await
     }
 
+    pub async fn get_federation_capabilities(
+        &self,
+    ) -> Result<
+        std::collections::HashMap<
+            FederationId,
+            crate::core::services::client_lifecycle::FederationCapabilities,
+        >,
+        AppError,
+    > {
+        self.client_lifecycle_service.get_capabilities().await
+    }
+
     pub async fn backup_federation(
         &self,
         federation_id: FederationId,
