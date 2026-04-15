@@ -48,6 +48,7 @@ pub struct PaymentOperation {
     pub operation_id: OperationId,
     pub federation_id: FederationId,
     pub payment_type: PaymentType,
+    pub protocol: Option<String>,
     pub amount_msat: Option<Amount>,
     pub fee_msat: Option<u64>,
     pub status: OperationStatus,

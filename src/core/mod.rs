@@ -36,6 +36,33 @@ use crate::events::EventBus;
 use crate::observability::correlation::RequestContext;
 use crate::webhooks::{WebhookConfig, WebhookNotifier};
 
+fn tracked_lightning_metadata(
+    protocol: &str,
+    operation_type: &str,
+    metadata: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mut object = match metadata {
+        Some(serde_json::Value::Object(map)) => map,
+        Some(other) => {
+            let mut map = serde_json::Map::new();
+            map.insert("clientMetadata".to_string(), other);
+            map
+        }
+        None => serde_json::Map::new(),
+    };
+
+    object.insert(
+        "protocol".to_string(),
+        serde_json::Value::String(protocol.to_string()),
+    );
+    object.insert(
+        "type".to_string(),
+        serde_json::Value::String(operation_type.to_string()),
+    );
+
+    Some(serde_json::Value::Object(object))
+}
+
 /// Trait for resolving payment information into Bolt11 invoices
 /// This allows the core to remain agnostic about web protocols like LNURL
 /// while allowing the API layer to provide resolution capabilities
@@ -490,7 +517,7 @@ impl FmcdCore {
                     operation_id,
                     req.federation_id,
                     req.amount_msat,
-                    req.metadata.clone(),
+                    tracked_lightning_metadata("lnv1", "ln_receive", req.metadata.clone()),
                     Some(context.correlation_id.clone()),
                 )
                 .await
@@ -1009,7 +1036,7 @@ impl FmcdCore {
                     req.federation_id,
                     tracked_amount,
                     Some(fee.msats),
-                    None,
+                    tracked_lightning_metadata("lnv1", "ln_pay", None),
                     Some(context.correlation_id.clone()),
                 )
                 .await

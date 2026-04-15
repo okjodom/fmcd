@@ -28,6 +28,7 @@ mod tests {
             operation_id,
             federation_id: test_federation_id(),
             payment_type: PaymentType::LightningPay,
+            protocol: Some("lnv1".to_string()),
             amount_msat: Some(Amount::from_msats(1_000)),
             fee_msat: Some(10),
             status,
@@ -94,6 +95,7 @@ mod tests {
             .expect("operation to reload");
 
         assert_eq!(operation.status, OperationStatus::TimedOut);
+        assert_eq!(operation.protocol.as_deref(), Some("lnv1"));
         assert_eq!(operation.fee_msat, Some(10));
         assert_eq!(
             operation.correlation_id.as_deref(),

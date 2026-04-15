@@ -41,6 +41,8 @@ pub struct TrackedOperationOutput {
     pub id: OperationId,
     pub federation_id: FederationId,
     pub payment_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
     pub status: String,
     pub amount_msat: Option<u64>,
     pub fee_msat: Option<u64>,
@@ -66,6 +68,7 @@ fn tracked_operation_output(operation: PaymentOperation) -> TrackedOperationOutp
         id: operation.operation_id,
         federation_id: operation.federation_id,
         payment_type: format!("{:?}", operation.payment_type),
+        protocol: operation.protocol,
         status: format!("{:?}", operation.status),
         amount_msat: operation.amount_msat.map(|amount| amount.msats),
         fee_msat: operation.fee_msat,

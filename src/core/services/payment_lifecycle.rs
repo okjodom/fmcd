@@ -21,6 +21,62 @@ use crate::core::operations::{
 };
 use crate::events::{EventBus, FmcdEvent};
 
+fn protocol_from_metadata(metadata: &Option<serde_json::Value>) -> Option<String> {
+    metadata
+        .as_ref()
+        .and_then(|value| value.get("protocol"))
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+}
+
+fn infer_payment_type(operation_kind: &str, meta: &serde_json::Value) -> Option<PaymentType> {
+    let variant = meta.get("variant").and_then(|v| v.as_str());
+    let op_type = meta.get("type").and_then(|v| v.as_str());
+
+    match operation_kind {
+        "ln" => {
+            if variant == Some("receive")
+                || op_type == Some("ln_receive")
+                || meta.get("invoice").is_some()
+            {
+                Some(PaymentType::LightningReceive)
+            } else if variant == Some("pay")
+                || op_type == Some("ln_pay")
+                || meta.get("payment_hash").is_some()
+            {
+                Some(PaymentType::LightningPay)
+            } else {
+                None
+            }
+        }
+        "lnv2" => {
+            if meta.get("Receive").is_some() || meta.get("LnurlReceive").is_some() {
+                Some(PaymentType::LightningReceive)
+            } else if meta.get("Send").is_some() {
+                Some(PaymentType::LightningPay)
+            } else {
+                None
+            }
+        }
+        "wallet" => {
+            if variant == Some("deposit")
+                || op_type == Some("deposit")
+                || meta.get("address").is_some()
+            {
+                Some(PaymentType::OnchainDeposit)
+            } else if variant == Some("withdraw")
+                || op_type == Some("withdraw")
+                || meta.get("recipient").is_some()
+            {
+                Some(PaymentType::OnchainWithdraw)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Configuration for the payment lifecycle manager
 #[derive(Debug, Clone)]
 pub struct PaymentLifecycleConfig {
@@ -173,6 +229,7 @@ impl PaymentLifecycleManager {
             operation_id,
             federation_id,
             payment_type: PaymentType::LightningReceive,
+            protocol: protocol_from_metadata(&metadata),
             amount_msat: Some(amount_msat),
             fee_msat: None,
             status: OperationStatus::Created,
@@ -203,6 +260,7 @@ impl PaymentLifecycleManager {
             operation_id,
             federation_id,
             payment_type: PaymentType::LightningPay,
+            protocol: protocol_from_metadata(&metadata),
             amount_msat: Some(amount_msat),
             fee_msat,
             status: OperationStatus::Pending,
@@ -230,6 +288,7 @@ impl PaymentLifecycleManager {
             operation_id,
             federation_id,
             payment_type: PaymentType::OnchainDeposit,
+            protocol: None,
             amount_msat: None, // Will be determined when deposit is confirmed
             fee_msat: None,
             status: OperationStatus::Created,
@@ -259,6 +318,7 @@ impl PaymentLifecycleManager {
             operation_id,
             federation_id,
             payment_type: PaymentType::OnchainWithdraw,
+            protocol: None,
             amount_msat: Some(Amount::from_sats(amount_sat)),
             fee_msat: Some(fee_sat.saturating_mul(1000)),
             status: OperationStatus::Pending,
@@ -361,59 +421,17 @@ impl PaymentLifecycleManager {
                 continue;
             }
 
-            // Determine payment type based on operation kind and metadata
-            // Also check the operation type string in metadata
             let meta = value.meta::<serde_json::Value>();
-            let variant = meta.get("variant").and_then(|v| v.as_str());
-            let op_type = meta.get("type").and_then(|v| v.as_str());
+            let payment_type = infer_payment_type(operation_kind, &meta);
 
-            let payment_type = match operation_kind {
-                "ln" => {
-                    // Check multiple metadata fields to determine operation type
-                    if variant == Some("receive")
-                        || op_type == Some("ln_receive")
-                        || meta.get("invoice").is_some()
-                    {
-                        Some(PaymentType::LightningReceive)
-                    } else if variant == Some("pay")
-                        || op_type == Some("ln_pay")
-                        || meta.get("payment_hash").is_some()
-                    {
-                        Some(PaymentType::LightningPay)
-                    } else {
-                        // Log unrecognized Lightning operation for debugging
-                        debug!(
-                            operation_id = ?operation_id,
-                            metadata = ?meta,
-                            "Unrecognized Lightning operation type during recovery"
-                        );
-                        None
-                    }
-                }
-                "wallet" => {
-                    // Check multiple metadata fields to determine operation type
-                    if variant == Some("deposit")
-                        || op_type == Some("deposit")
-                        || meta.get("address").is_some()
-                    {
-                        Some(PaymentType::OnchainDeposit)
-                    } else if variant == Some("withdraw")
-                        || op_type == Some("withdraw")
-                        || meta.get("recipient").is_some()
-                    {
-                        Some(PaymentType::OnchainWithdraw)
-                    } else {
-                        // Log unrecognized wallet operation for debugging
-                        debug!(
-                            operation_id = ?operation_id,
-                            metadata = ?meta,
-                            "Unrecognized wallet operation type during recovery"
-                        );
-                        None
-                    }
-                }
-                _ => None,
-            };
+            if payment_type.is_none() {
+                debug!(
+                    operation_id = ?operation_id,
+                    operation_kind,
+                    metadata = ?meta,
+                    "Unrecognized operation type during recovery"
+                );
+            }
 
             // Skip operations that have completed outcomes ONLY if they're truly complete
             // For receive operations, we still want to track them if ecash hasn't been
@@ -444,6 +462,11 @@ impl PaymentLifecycleManager {
                     operation_id,
                     federation_id,
                     payment_type: payment_type.clone(),
+                    protocol: match operation_kind {
+                        "ln" => Some("lnv1".to_string()),
+                        "lnv2" => Some("lnv2".to_string()),
+                        _ => None,
+                    },
                     amount_msat: value
                         .meta::<serde_json::Value>()
                         .get("amount_msat")

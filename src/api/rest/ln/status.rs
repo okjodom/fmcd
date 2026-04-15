@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{error, info, instrument, warn};
 
+use crate::core::operations::{OperationStatus, PaymentOperation};
 use crate::core::{InvoiceStatus, SettlementInfo};
 use crate::error::AppError;
 use crate::state::AppState;
@@ -34,6 +35,61 @@ pub struct StatusResponse {
     pub last_updated: chrono::DateTime<Utc>,
 }
 
+fn tracked_operation_invoice_amount(
+    operation: &PaymentOperation,
+    fallback_amount_msat: u64,
+) -> u64 {
+    operation
+        .amount_msat
+        .map(|amount| amount.msats)
+        .filter(|amount| *amount > 0)
+        .unwrap_or(fallback_amount_msat)
+}
+
+fn tracked_operation_status_response(
+    operation: &PaymentOperation,
+    fallback_amount_msat: u64,
+) -> (InvoiceStatus, Option<SettlementInfo>) {
+    match operation.status {
+        OperationStatus::Created => (InvoiceStatus::Created, None),
+        OperationStatus::Pending => (InvoiceStatus::Pending, None),
+        OperationStatus::Succeeded => {
+            let amount_received_msat =
+                tracked_operation_invoice_amount(operation, fallback_amount_msat);
+            let settlement_info = SettlementInfo {
+                amount_received_msat,
+                settled_at: operation.updated_at,
+                preimage: None,
+                gateway_fee_msat: operation.fee_msat,
+            };
+
+            (
+                InvoiceStatus::Claimed {
+                    amount_received_msat,
+                    settled_at: operation.updated_at,
+                },
+                Some(settlement_info),
+            )
+        }
+        OperationStatus::TimedOut => (
+            InvoiceStatus::Expired {
+                expired_at: operation.updated_at,
+            },
+            None,
+        ),
+        OperationStatus::Failed | OperationStatus::Refunded => (
+            InvoiceStatus::Canceled {
+                reason: operation
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| "Invoice canceled".to_string()),
+                canceled_at: operation.updated_at,
+            },
+            None,
+        ),
+    }
+}
+
 /// Unified status endpoint that supports both invoice_id and operation_id
 /// lookup
 #[instrument(
@@ -51,7 +107,6 @@ async fn _get_status(
     query: StatusQuery,
 ) -> Result<StatusResponse, AppError> {
     let span = tracing::Span::current();
-    let lightning_module = client.get_first_module::<LightningClientModule>()?;
 
     // Try to get the invoice amount from operation metadata
     let invoice_amount_msat = client
@@ -65,6 +120,48 @@ async fn _get_status(
                 .and_then(|v| v.as_u64())
         })
         .unwrap_or(0); // Default to 0 if not found
+
+    let tracked_operation = state.core.get_tracked_operation(&operation_id).await;
+    let last_updated = tracked_operation
+        .as_ref()
+        .map(|operation| operation.updated_at)
+        .unwrap_or_else(Utc::now);
+
+    let tracked_protocol = tracked_operation
+        .as_ref()
+        .and_then(|operation| operation.protocol.as_deref());
+    let tracked_is_terminal = tracked_operation
+        .as_ref()
+        .map(|operation| operation.status.is_terminal())
+        .unwrap_or(false);
+
+    if tracked_protocol == Some("lnv2") || tracked_is_terminal {
+        if let Some(tracked_operation) = tracked_operation.as_ref() {
+            let (status, settlement) =
+                tracked_operation_status_response(tracked_operation, invoice_amount_msat);
+
+            span.record("status", format!("{:?}", status));
+
+            info!(
+                operation_id = ?operation_id,
+                federation_id = %query.federation_id,
+                protocol = tracked_operation.protocol.as_deref().unwrap_or("unknown"),
+                status = ?status,
+                "Retrieved invoice status using tracked fmcd state"
+            );
+
+            return Ok(StatusResponse {
+                invoice_id: None,
+                operation_id,
+                status,
+                settlement,
+                tracked_status: Some(format!("{:?}", tracked_operation.status)),
+                last_updated,
+            });
+        }
+    }
+
+    let lightning_module = client.get_first_module::<LightningClientModule>()?;
 
     // Use fedimint's native subscribe_ln_receive to get current state
     let current_state = match lightning_module.subscribe_ln_receive(operation_id).await {
@@ -96,11 +193,6 @@ async fn _get_status(
         }
     };
 
-    let tracked_operation = state.core.get_tracked_operation(&operation_id).await;
-    let last_updated = tracked_operation
-        .as_ref()
-        .map(|operation| operation.updated_at)
-        .unwrap_or_else(Utc::now);
     let (status, settlement) = match current_state {
         LnReceiveState::Created => (InvoiceStatus::Created, None),
         LnReceiveState::WaitingForPayment { .. } => (InvoiceStatus::Pending, None),
