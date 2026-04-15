@@ -5,6 +5,7 @@ use axum::Json;
 use fedimint_client::ClientHandleArc;
 use fedimint_core::config::FederationId;
 use fedimint_ln_client::LightningClientModule;
+use fedimint_lnv2_client::LightningClientModule as LightningClientModuleV2;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -18,7 +19,19 @@ pub struct ListGatewaysRequest {
 }
 
 async fn _gateways(client: ClientHandleArc) -> Result<Value, AppError> {
-    let lightning_module = client.get_first_module::<LightningClientModule>()?;
+    let lightning_module = match client.get_first_module::<LightningClientModule>() {
+        Ok(module) => module,
+        Err(legacy_error) => {
+            if client.get_first_module::<LightningClientModuleV2>().is_ok() {
+                return Ok(serde_json::to_value(Vec::<String>::new())?);
+            }
+
+            return Err(AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                anyhow!("Failed to get Lightning module: {}", legacy_error),
+            ));
+        }
+    };
     let gateways = lightning_module.list_gateways().await;
     if gateways.is_empty() {
         return Ok(serde_json::to_value(Vec::<String>::new())?);
